@@ -28,15 +28,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         logger.info("Logging in to IBM Quantum site")
         # do we have a token saved with lwfm?
         token = ""
-        QiskitRuntimeService.save_account(
-            token=token,
-            channel="ibm_cloud", # `channel` distinguishes between different account types
-            instance="",
-            name="lwfm", # Optionally name this set of credentials
-            overwrite=True,
-            verify=False
-        )
-        service = QiskitRuntimeService(name="lwfm")
+        service = QiskitRuntimeService(token=token, channel="ibm_cloud", verify=False)
         service.active_account()
         logger.info("Logged in to IBM Quantum site")
         return True
