@@ -106,7 +106,8 @@ class IBMQuantumSiteAuth(SiteAuth):
         try:
             token = self.getToken()
             self._service = QiskitRuntimeService(token=token,
-                                                channel="ibm_cloud")
+                                                channel="ibm_cloud",
+                                                verify=False)
                                                 # might be needed for corp networks
                                                 # verify=False)
             logger.info("Logged in to IBM Quantum site")
@@ -349,9 +350,9 @@ def main():
     print("Auth current: ", site.getAuthDriver().isAuthCurrent())
     print("Compute types: ", site.getSpinDriver().listComputeTypes())
 
-    jobDefn = JobDefn(qpy.dump(get_quantum_circuit()))
-    jobStatus = site.getRunDriver().submit(jobDefn, None, "ibm_brisbane", None)
-    print("Job status: ", jobStatus)
+    #jobDefn = JobDefn(qpy.dump(get_quantum_circuit()))
+    #jobStatus = site.getRunDriver().submit(jobDefn, None, "ibm_brisbane", None)
+    #print("Job status: ", jobStatus)
 
 
 if __name__ == "__main__":
