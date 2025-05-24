@@ -23,7 +23,8 @@ from lwfm.base.Site import Site, SiteAuth, SiteRun, SiteRepo, SiteSpin
 from lwfm.sites.LocalSite import LocalSiteRepo
 from lwfm.midware.LwfManager import logger, lwfManager
 
-#pylint: disable=broad-except
+
+#pylint: disable=broad-except, missing-function-docstring
 
 
 SITE_NAME = "ibm-quantum"
@@ -90,7 +91,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         Get the token
         """
-        return Site.getSiteProperties(SITE_NAME).get("token")
+        return lwfManager.getSiteProperties(SITE_NAME).get("token")
 
 
     def login(self, force: bool = False) -> bool:
@@ -345,7 +346,7 @@ def main():
     """
     Main function for testing the IBM Quantum site driver
     """
-    site = Site.getSite(SITE_NAME)
+    site = lwfManager.getSite(SITE_NAME)
     site.getAuthDriver().login()
     print("Auth current: ", site.getAuthDriver().isAuthCurrent())
     print("Compute types: ", site.getSpinDriver().listComputeTypes())
