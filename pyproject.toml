@@ -7,7 +7,8 @@ requires-python = ">=3.10"
 dependencies = [
     "lwfm@git+https://github.com/lwfm-proj/lwfm@develop",
     "qiskit>=2.0",
-    "qiskit-ibm-runtime"
+    "qiskit-ibm-runtime",
+    "qiskit_qasm3_import"
 ]
 
 [tool.black]
