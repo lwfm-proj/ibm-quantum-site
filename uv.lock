@@ -280,7 +280,7 @@ wheels = [
 [[package]]
 name = "ibm-quantum-site"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "lwfm" },
     { name = "qiskit" },
@@ -329,7 +329,7 @@ wheels = [
 [[package]]
 name = "lwfm"
 version = "0.1.0"
-source = { git = "https://github.com/lwfm-proj/lwfm?rev=develop#99dc5f08ab35364ffa7cb4b352696b1d99465ddd" }
+source = { git = "https://github.com/lwfm-proj/lwfm?rev=develop#7e55c1307b4b7365ef4a2f5f9c039dd2b5cfc007" }
 dependencies = [
     { name = "dill" },
     { name = "flask" },
