@@ -1,6 +1,11 @@
 #pylint: disable=invalid-name
 """
 lwfm Site driver for IBM Quantum
+
+TODO Note: One side-effect of our venv approach in IBMQuantumVenvSite is each call to a
+Site Pillar method is its own process, so the handle to the IBM cloud service is lost
+at the end of each call. A workaround is to login at the top of each Pillar method, 
+but a better approach would be to squirrel away the connection somewhere.
 """
 
 from typing import List, Union
@@ -15,7 +20,6 @@ from qiskit.transpiler import generate_preset_pass_manager
 
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.qasm3 import dumps, loads
-
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 
@@ -33,7 +37,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 #pylint: disable=broad-except, missing-function-docstring
 
 
-SITE_NAME = "ibm-quantum"
 
 
 #**********************************************************************************
@@ -60,7 +63,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         Get the token for IBM Cloud which we store in ~/.lwfm/site.toml 
         """
-        return lwfManager.getSiteProperties(SITE_NAME).get("token")
+        return lwfManager.getSiteProperties(self.getSite().getSiteName()).get("token")
 
 
     def login(self, force: bool = False) -> bool:
@@ -80,7 +83,7 @@ class IBMQuantumSiteAuth(SiteAuth):
                                                 verify=False)
                                                 # might be needed for corp networks
                                                 # verify=False)
-            logger.info("Logged in to IBM Quantum site")
+            logger.info("Successfully logged in to IBM Quantum site")
             return True
         except Exception as e:
             logger.error("Failed to login to IBM Quantum site: %s", e)
@@ -90,13 +93,10 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         Check if the authentication is current
         """
-        logger.info("Checking if authentication is current")
-        try:
-            self._service.active_account()
-            return True
-        except Exception as e:
-            logger.error("Authentication is not current: %s", e)
+        if not self.getSite().getAuthDriver().login():
+            logger.error("Unable to login to IBM cloud")
             return False
+
 
 #**********************************************************************************
 # Site Run Driver
@@ -106,10 +106,6 @@ class IBMQuantumSiteRun(SiteRun):
     """
     A Site driver for running jobs on IBM Quantum
     """
-    def __init__(self, auth: IBMQuantumSiteAuth = None):
-        super().__init__()
-        self._auth = auth
-
 
     def _mapStatus(self, ibmStatus: str) -> str:
         # Map IBM status strings to JobStatus enum values
@@ -137,6 +133,10 @@ class IBMQuantumSiteRun(SiteRun):
         """
 
         try:
+            if not self.getSite().getAuthDriver().login():
+                logger.error("Unable to login to IBM cloud")
+                return None
+
             # a "backend" is a quantum computer or simulator - we have no default
             if computeType is None:
                 logger.error("computeType (backend) is None")
@@ -164,7 +164,7 @@ class IBMQuantumSiteRun(SiteRun):
                 useContext.setWorkflowId(parentContext.getWorkflowId())
                 useContext.setName(parentContext.getName())
 
-            useContext.setSiteName(SITE_NAME)
+            useContext.setSiteName(self.getSite().getSiteName())
             useContext.setComputeType(computeType)
 
             entry_point = jobDefn.getEntryPoint()
@@ -183,7 +183,7 @@ class IBMQuantumSiteRun(SiteRun):
             #    - we use the runtime job to get the results asynchronously
 
             # get the IBM Quantum backend
-            service = self._auth.getIBMService()
+            service: QiskitRuntimeService = self.getSite().getAuthDriver().getIBMService()
             backend = service.backend(computeType)
 
             # the circuit may be expressed in a number of formats:
@@ -248,12 +248,16 @@ class IBMQuantumSiteRun(SiteRun):
         Get a job status from the IBM Quantum Cloud.
         """
         try:
+            if not self.getSite().getAuthDriver().login():
+                logger.error("Unable to login to IBM cloud")
+                return None
             status = lwfManager.getStatus(jobId)
             if status is None:
                 return None
             if status.isTerminal():
                 return status
-            job = self._auth.getIBMService().job(status.getJobContext().getNativeId())
+            job = self.getSite().getAuthDriver().getIBMService().job(
+                status.getJobContext().getNativeId())
             if job is None:
                 # return the latest status we have
                 return status
@@ -276,10 +280,13 @@ class IBMQuantumSiteRun(SiteRun):
         Cancel a job in the IBM Quantum Cloud.
         """
         try:
+            if not self.getSite().getAuthDriver().login():
+                logger.error("Unable to login to IBM cloud")
+                return None
             if isinstance(jobContext, str):
                 jobContext = lwfManager.deserialize(jobContext)
             nativeId = jobContext.getNativeId()
-            self._auth.getIBMService().delete_job(nativeId)
+            self.getSite().getAuthDriver().getIBMService().delete_job(nativeId)
             lwfManager.emitStatus(jobContext, self._mapStatus("CANCELLED"), "CANCELLED")
             return True
         except Exception as e:
@@ -300,18 +307,16 @@ class IBMQuantumSiteSpin(SiteSpin):
     A Site driver for managing the spin for an IBM Quantum site
     """
 
-    def __init__(self, auth: IBMQuantumSiteAuth = None):
-        super().__init__()
-        self._auth = auth
-
-
     def listComputeTypes(self) -> List[str]:
         """
         List the compute types available on the IBM Quantum site - these are 
         named quantum computers.
         """
         try:
-            backends = self._auth.getIBMService().backends()
+            if not self.getSite().getAuthDriver().login():
+                logger.error("Unable to login to IBM cloud")
+                return None
+            backends = self.getSite().getAuthDriver().getIBMService().backends()
             backend_names = [backend.name for backend in backends]
             return backend_names
         except Exception as e:
@@ -327,20 +332,27 @@ class IBMQuantumSite(Site):
     A Site driver for IBM Quantum
     """
 
+    SITE_NAME = "ibm-quantum"
+
 
     def __init__(self, site_name: str = None,
                  auth_driver: SiteAuth = None,
                  run_driver: SiteRun = None,
                  repo_driver: SiteRepo = None,
                  spin_driver: SiteSpin = None):
-        ibmSiteAuth = IBMQuantumSiteAuth()
-        super().__init__(
-            site_name or SITE_NAME,
-            auth_driver or ibmSiteAuth,
-            run_driver  or IBMQuantumSiteRun(ibmSiteAuth),
-            repo_driver or LocalSiteRepo(),
-            spin_driver or IBMQuantumSiteSpin(ibmSiteAuth)
-        )
+        self._authDriver = auth_driver or IBMQuantumSiteAuth()
+        self._runDriver = run_driver or IBMQuantumSiteRun()
+        self._repoDriver = repo_driver or LocalSiteRepo()
+        self._spinDriver = spin_driver or IBMQuantumSiteSpin()
+        self._authDriver.setSite(self)
+        self._runDriver.setSite(self)
+        self._repoDriver.setSite(self)
+        self._spinDriver.setSite(self)
+        super().__init__(site_name,
+            self._authDriver,
+            self._runDriver,
+            self._repoDriver,
+            self._spinDriver)
 
 
 #**********************************************************************************
@@ -363,15 +375,33 @@ def get_observables() -> List[SparsePauliOp]:
     return observables
 
 
-def main():
+def poll_job(jobid : str, siteName: str = IBMQuantumSite.SITE_NAME):
+    site = lwfManager.getSite(siteName)
+    site.getAuthDriver().login()
+    job_status = site.getRunDriver().getStatus(jobid)
+    print(f"*** lwfm job {job_status.getJobId()} " + \
+        f"is IBM job {job_status.getJobContext().getNativeId()} " + \
+        f"status: {job_status.getStatus()}")
+    if job_status.getStatus() == "COMPLETE":
+        print(f"native info: {job_status.getNativeInfo()}")
+
+
+def main(siteName : str = IBMQuantumSite.SITE_NAME):
     """
     Main function for testing the IBM Quantum site driver
     """
-    site = lwfManager.getSite(SITE_NAME)
+    site = lwfManager.getSite(siteName)
     site.getAuthDriver().login()
-    print("*** Auth current: ", site.getAuthDriver().isAuthCurrent())
+    print(f"*** Running as site {site.getSiteName()}")
+    isLoggedIn = site.getAuthDriver().isAuthCurrent()
+    print("*** Auth current: ", isLoggedIn)
+    if not isLoggedIn:
+        print("IBM authentication failed - exiting")
+
     computeTypes = site.getSpinDriver().listComputeTypes()
     print("*** Compute types: ", computeTypes)
+    if computeTypes is None:
+        computeTypes = []
 
     if "ibm_brisbane" in computeTypes:
         # Get the quantum circuit
@@ -400,25 +430,13 @@ def main():
         print(f"*** lwfm job {job_status.getJobId()} " + \
             f"is IBM job {job_status.getJobContext().getNativeId()} " + \
             f"status: {job_status.getStatus()}")
-
     else:
         print("*** No ibm_brisbane anymore... RIP... we'll need to pick another one.")
 
 
-def poll_job(jobid : str):
-    site = lwfManager.getSite(SITE_NAME)
-    site.getAuthDriver().login()
-    job_status = site.getRunDriver().getStatus(jobid)
-    print(f"*** lwfm job {job_status.getJobId()} " + \
-        f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-        f"status: {job_status.getStatus()}")
-    if job_status.getStatus() == "COMPLETE":
-        print(f"native info: {job_status.getNativeInfo()}")
-
-
 if __name__ == "__main__":
     import sys
-    
+
     # Check if an argument was provided (job ID)
     if len(sys.argv) > 1:
         job_id = sys.argv[1]
