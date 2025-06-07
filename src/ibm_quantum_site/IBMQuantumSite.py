@@ -1,11 +1,12 @@
-#pylint: disable=invalid-name
+#pylint: disable=invalid-name, broad-except, missing-function-docstring
 """
 lwfm Site driver for IBM Quantum
 
-TODO Note: One side-effect of our venv approach in IBMQuantumVenvSite is each call to a
-Site Pillar method is its own process, so the handle to the IBM cloud service is lost
+TODO Note: One side-effect of our venv approach is each call to a Site Pillar method is
+stateless - in its own process, so the handle to the IBM cloud service is lost
 at the end of each call. A workaround is to login at the top of each Pillar method, 
-but a better approach would be to squirrel away the connection somewhere.
+but a better approach would be to squirrel away the connection somewhere, like 
+in a lwfm auth repo.
 """
 
 from typing import List, Union
@@ -34,10 +35,6 @@ from lwfm.midware.LwfManager import logger, lwfManager
 # Suppress InsecureRequestWarning messages
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-#pylint: disable=broad-except, missing-function-docstring
-
-
-
 
 #**********************************************************************************
 # Site Auth Driver
@@ -63,14 +60,14 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         Get the token for IBM Cloud which we store in ~/.lwfm/site.toml 
         """
-        return lwfManager.getSiteProperties(self.getSite().getSiteName()).get("token")
+        return lwfManager.getSiteProperties(self.getSiteName()).get("token")
 
 
     def login(self, force: bool = False) -> bool:
         """
         Login to the IBM Quantum site
         """
-        logger.info("Logging in to IBM Quantum site")
+        logger.info("Attempting remote login to IBM Quantum site")
         try:
             self._service.active_account()
             return True
