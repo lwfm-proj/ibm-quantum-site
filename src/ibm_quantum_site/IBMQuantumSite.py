@@ -1,4 +1,4 @@
-#pylint: disable=invalid-name, broad-except, missing-function-docstring
+#pylint: disable=invalid-name, broad-except, missing-function-docstring, protected-access
 """
 lwfm Site driver for IBM Quantum
 
@@ -15,12 +15,10 @@ import os
 import urllib3
 
 from qiskit import qpy
-from qiskit import QuantumCircuit
 
 from qiskit.transpiler import generate_preset_pass_manager
 
-from qiskit.quantum_info import SparsePauliOp
-from qiskit.qasm3 import dumps, loads
+from qiskit.qasm3 import loads
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 
@@ -28,12 +26,14 @@ from lwfm.base.JobContext import JobContext
 from lwfm.base.JobStatus import JobStatus
 from lwfm.base.JobDefn import JobDefn
 from lwfm.base.Workflow import Workflow
-from lwfm.base.Site import Site, SiteAuth, SiteRun, SiteRepo, SiteSpin
-from lwfm.sites.LocalSite import LocalSiteRepo
+from lwfm.base.Site import SiteAuth, SiteRun, SiteSpin
 from lwfm.midware.LwfManager import logger, lwfManager
 
 # Suppress InsecureRequestWarning messages
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+
 
 
 #**********************************************************************************
@@ -44,23 +44,24 @@ class IBMQuantumSiteAuth(SiteAuth):
     A Site driver for managing the authentication for an IBM Quantum site
     """
 
-    def __init__(self):
-        super().__init__()
-        self._service = None
-
-    def getIBMService(self) -> QiskitRuntimeService:
-        """
-        Get the QiskitRuntimeService. Not part of the general "Site" interface, this
-        method is used by the other drivers to access the actual cloud service.
-        """
-        return self._service
-
-
     def _getToken(self) -> str:
         """
         Get the token for IBM Cloud which we store in ~/.lwfm/site.toml 
         """
         return lwfManager.getSiteProperties(self.getSiteName()).get("token")
+
+
+    def _getIBMService(self) -> QiskitRuntimeService:
+        """
+        Get the QiskitRuntimeService. Not part of the general "Site" interface, this
+        method is used by the other drivers to access the actual cloud service.
+        """
+        token = self._getToken()
+        return QiskitRuntimeService(token=token,
+                                    channel="ibm_cloud",
+                                    verify=False)
+                                    # might be needed for corp networks
+                                    # verify=False)
 
 
     def login(self, force: bool = False) -> bool:
@@ -69,30 +70,38 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         logger.info("Attempting remote login to IBM Quantum site")
         try:
-            self._service.active_account()
-            return True
-        except Exception:
-            pass
-        try:
-            token = self._getToken()
-            self._service = QiskitRuntimeService(token=token,
-                                                channel="ibm_cloud",
-                                                verify=False)
-                                                # might be needed for corp networks
-                                                # verify=False)
+            self._getIBMService()
             logger.info("Successfully logged in to IBM Quantum site")
             return True
         except Exception as e:
             logger.error("Failed to login to IBM Quantum site: %s", e)
             return False
 
+
     def isAuthCurrent(self) -> bool:
         """
         Check if the authentication is current
         """
-        if not self.getSite().getAuthDriver().login():
+        if not self.login():
             logger.error("Unable to login to IBM cloud")
             return False
+
+
+#**********************************************************************************
+# internal module helper
+
+
+def _getAuthDriver(siteName: str) -> IBMQuantumSiteAuth:
+    """
+    Return the auth driver for IBM Quantum Cloud. 
+    TODO We -could- maybe use the site name to lookup into sites.toml, get the 
+    actual IBM auth class name for this site, but its likely to be this one 
+    anyway. Also, we assume the existance of the QiskitRuntimeSerivce, which 
+    not be the case in an arbitrary auth driver.
+    """
+    siteAuth = IBMQuantumSiteAuth()
+    siteAuth.setSiteName(siteName)
+    return siteAuth
 
 
 #**********************************************************************************
@@ -130,7 +139,7 @@ class IBMQuantumSiteRun(SiteRun):
         """
 
         try:
-            if not self.getSite().getAuthDriver().login():
+            if not _getAuthDriver(self.getSiteName()).login():
                 logger.error("Unable to login to IBM cloud")
                 return None
 
@@ -161,7 +170,7 @@ class IBMQuantumSiteRun(SiteRun):
                 useContext.setWorkflowId(parentContext.getWorkflowId())
                 useContext.setName(parentContext.getName())
 
-            useContext.setSiteName(self.getSite().getSiteName())
+            useContext.setSiteName(self.getSiteName())
             useContext.setComputeType(computeType)
 
             entry_point = jobDefn.getEntryPoint()
@@ -180,7 +189,7 @@ class IBMQuantumSiteRun(SiteRun):
             #    - we use the runtime job to get the results asynchronously
 
             # get the IBM Quantum backend
-            service: QiskitRuntimeService = self.getSite().getAuthDriver().getIBMService()
+            service: QiskitRuntimeService = _getAuthDriver(self.getSiteName()).  _getIBMService()
             backend = service.backend(computeType)
 
             # the circuit may be expressed in a number of formats:
@@ -245,7 +254,7 @@ class IBMQuantumSiteRun(SiteRun):
         Get a job status from the IBM Quantum Cloud.
         """
         try:
-            if not self.getSite().getAuthDriver().login():
+            if not _getAuthDriver(self.getSiteName()).login():
                 logger.error("Unable to login to IBM cloud")
                 return None
             status = lwfManager.getStatus(jobId)
@@ -253,7 +262,7 @@ class IBMQuantumSiteRun(SiteRun):
                 return None
             if status.isTerminal():
                 return status
-            job = self.getSite().getAuthDriver().getIBMService().job(
+            job = _getAuthDriver(self.getSiteName())._getIBMService().job(
                 status.getJobContext().getNativeId())
             if job is None:
                 # return the latest status we have
@@ -277,13 +286,13 @@ class IBMQuantumSiteRun(SiteRun):
         Cancel a job in the IBM Quantum Cloud.
         """
         try:
-            if not self.getSite().getAuthDriver().login():
+            if not _getAuthDriver(self.getSiteName()).login():
                 logger.error("Unable to login to IBM cloud")
                 return None
             if isinstance(jobContext, str):
                 jobContext = lwfManager.deserialize(jobContext)
             nativeId = jobContext.getNativeId()
-            self.getSite().getAuthDriver().getIBMService().delete_job(nativeId)
+            _getAuthDriver(self.getSiteName())._getIBMService().delete_job(nativeId)
             lwfManager.emitStatus(jobContext, self._mapStatus("CANCELLED"), "CANCELLED")
             return True
         except Exception as e:
@@ -310,10 +319,8 @@ class IBMQuantumSiteSpin(SiteSpin):
         named quantum computers.
         """
         try:
-            if not self.getSite().getAuthDriver().login():
-                logger.error("Unable to login to IBM cloud")
-                return None
-            backends = self.getSite().getAuthDriver().getIBMService().backends()
+            service: QiskitRuntimeService = _getAuthDriver(self.getSiteName())._getIBMService()
+            backends = service.backends()
             backend_names = [backend.name for backend in backends]
             return backend_names
         except Exception as e:
@@ -321,125 +328,95 @@ class IBMQuantumSiteSpin(SiteSpin):
             return []
 
 
-#**********************************************************************************
-# Site Driver
-
-class IBMQuantumSite(Site):
-    """
-    A Site driver for IBM Quantum
-    """
-
-    SITE_NAME = "ibm-quantum"
-
-
-    def __init__(self, site_name: str = None,
-                 auth_driver: SiteAuth = None,
-                 run_driver: SiteRun = None,
-                 repo_driver: SiteRepo = None,
-                 spin_driver: SiteSpin = None):
-        self._authDriver = auth_driver or IBMQuantumSiteAuth()
-        self._runDriver = run_driver or IBMQuantumSiteRun()
-        self._repoDriver = repo_driver or LocalSiteRepo()
-        self._spinDriver = spin_driver or IBMQuantumSiteSpin()
-        self._authDriver.setSite(self)
-        self._runDriver.setSite(self)
-        self._repoDriver.setSite(self)
-        self._spinDriver.setSite(self)
-        super().__init__(site_name,
-            self._authDriver,
-            self._runDriver,
-            self._repoDriver,
-            self._spinDriver)
-
 
 #**********************************************************************************
 # Main - testing only
 
-def get_quantum_circuit() -> QuantumCircuit:
-    # Create a new circuit with two qubits
-    qc = QuantumCircuit(2)
-    # Add a Hadamard gate to qubit 0
-    qc.h(0)
-    # Perform a controlled-X gate on qubit 1, controlled by qubit 0
-    qc.cx(0, 1)
-    qc.measure_all()
-    return qc
+# def get_quantum_circuit() -> QuantumCircuit:
+#     # Create a new circuit with two qubits
+#     qc = QuantumCircuit(2)
+#     # Add a Hadamard gate to qubit 0
+#     qc.h(0)
+#     # Perform a controlled-X gate on qubit 1, controlled by qubit 0
+#     qc.cx(0, 1)
+#     qc.measure_all()
+#     return qc
 
-def get_observables() -> List[SparsePauliOp]:
-    # Set up six different observables.
-    observables_labels = ["IZ", "IX", "ZI", "XI", "ZZ", "XX"]
-    observables = [SparsePauliOp(label) for label in observables_labels]
-    return observables
-
-
-def poll_job(jobid : str, siteName: str = IBMQuantumSite.SITE_NAME):
-    site = lwfManager.getSite(siteName)
-    site.getAuthDriver().login()
-    job_status = site.getRunDriver().getStatus(jobid)
-    print(f"*** lwfm job {job_status.getJobId()} " + \
-        f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-        f"status: {job_status.getStatus()}")
-    if job_status.getStatus() == "COMPLETE":
-        print(f"native info: {job_status.getNativeInfo()}")
+# def get_observables() -> List[SparsePauliOp]:
+#     # Set up six different observables.
+#     observables_labels = ["IZ", "IX", "ZI", "XI", "ZZ", "XX"]
+#     observables = [SparsePauliOp(label) for label in observables_labels]
+#     return observables
 
 
-def main(siteName : str = IBMQuantumSite.SITE_NAME):
-    """
-    Main function for testing the IBM Quantum site driver
-    """
-    site = lwfManager.getSite(siteName)
-    site.getAuthDriver().login()
-    print(f"*** Running as site {site.getSiteName()}")
-    isLoggedIn = site.getAuthDriver().isAuthCurrent()
-    print("*** Auth current: ", isLoggedIn)
-    if not isLoggedIn:
-        print("IBM authentication failed - exiting")
-
-    computeTypes = site.getSpinDriver().listComputeTypes()
-    print("*** Compute types: ", computeTypes)
-    if computeTypes is None:
-        computeTypes = []
-
-    if "ibm_brisbane" in computeTypes:
-        # Get the quantum circuit
-        circuit = get_quantum_circuit()
-        print(f"*** Circuit has {circuit.qubits}")
-
-        # Serialize the circuit to OpenQASM format (could also do QPY)
-        circuit_str = dumps(circuit)
-
-        # Create a JobDefn with the serialized circuit
-        # The JobDefn constructor accepts a string representation of the job definition
-        job_defn = JobDefn(circuit_str)
-
-        # Submit the job
-        print("*** Ready to send circuit to IBM")
-        job_status = site.getRunDriver().submit(job_defn, None, "ibm_brisbane",
-            {"shots": 1024, "format": "qasm3"})
-        print(f"*** lwfm job {job_status.getJobId()} " + \
-            f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-            f"initial status: {job_status.getStatus()}")
-
-        # we don't want to wait synchronously - this IBM Cloud job might sit in queue
-        # for a while though the runtime is short
-        # but let's poll for status one time to show we can
-        job_status = site.getRunDriver().getStatus(job_status.getJobId())
-        print(f"*** lwfm job {job_status.getJobId()} " + \
-            f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-            f"status: {job_status.getStatus()}")
-    else:
-        print("*** No ibm_brisbane anymore... RIP... we'll need to pick another one.")
+# def poll_job(jobid : str, siteName: str):
+#     site = lwfManager.getSite(siteName)
+#     site.getAuthDriver().login()
+#     job_status = site.getRunDriver().getStatus(jobid)
+#     print(f"*** lwfm job {job_status.getJobId()} " + \
+#         f"is IBM job {job_status.getJobContext().getNativeId()} " + \
+#         f"status: {job_status.getStatus()}")
+#     if job_status.getStatus() == "COMPLETE":
+#         print(f"native info: {job_status.getNativeInfo()}")
 
 
-if __name__ == "__main__":
-    import sys
+# def main(siteName : str):
+#     """
+#     Main function for testing the IBM Quantum site driver
+#     """
+#     site = lwfManager.getSite(siteName)
+#     site.getAuthDriver().login()
+#     print(f"*** Running as site {site.getSiteName()}")
+#     isLoggedIn = site.getAuthDriver().isAuthCurrent()
+#     print("*** Auth current: ", isLoggedIn)
+#     if not isLoggedIn:
+#         print("IBM authentication failed - exiting")
 
-    # Check if an argument was provided (job ID)
-    if len(sys.argv) > 1:
-        job_id = sys.argv[1]
-        print(f"Job ID provided: {job_id}")
-        # Handle job ID here
-        poll_job(job_id)
-    else:
-        # No arguments, run the main function
-        main()
+#     computeTypes = site.getSpinDriver().listComputeTypes()
+#     print("*** Compute types: ", computeTypes)
+#     if computeTypes is None:
+#         computeTypes = []
+
+#     if "ibm_brisbane" in computeTypes:
+#         # Get the quantum circuit
+#         circuit = get_quantum_circuit()
+#         print(f"*** Circuit has {circuit.qubits}")
+
+#         # Serialize the circuit to OpenQASM format (could also do QPY)
+#         circuit_str = dumps(circuit)
+
+#         # Create a JobDefn with the serialized circuit
+#         # The JobDefn constructor accepts a string representation of the job definition
+#         job_defn = JobDefn(circuit_str)
+
+#         # Submit the job
+#         print("*** Ready to send circuit to IBM")
+#         job_status = site.getRunDriver().submit(job_defn, None, "ibm_brisbane",
+#             {"shots": 1024, "format": "qasm3"})
+#         print(f"*** lwfm job {job_status.getJobId()} " + \
+#             f"is IBM job {job_status.getJobContext().getNativeId()} " + \
+#             f"initial status: {job_status.getStatus()}")
+
+#         # we don't want to wait synchronously - this IBM Cloud job might sit in queue
+#         # for a while though the runtime is short
+#         # but let's poll for status one time to show we can
+#         job_status = site.getRunDriver().getStatus(job_status.getJobId())
+#         print(f"*** lwfm job {job_status.getJobId()} " + \
+#             f"is IBM job {job_status.getJobContext().getNativeId()} " + \
+#             f"status: {job_status.getStatus()}")
+#     else:
+#         print("*** No ibm_brisbane anymore... RIP... we'll need to pick another one.")
+
+
+# if __name__ == "__main__":
+#     import sys
+
+#     # Check if an argument was provided (job ID)
+#     if len(sys.argv) > 1:
+#         job_id = sys.argv[1]
+#         print(f"Job ID provided: {job_id}")
+#         # Handle job ID here
+#         poll_job(job_id)
+#     else:
+#         # No arguments, run the main function
+#         main()
