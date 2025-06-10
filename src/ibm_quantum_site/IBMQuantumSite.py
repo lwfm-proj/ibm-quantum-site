@@ -19,6 +19,7 @@ from qiskit import qpy
 from qiskit.transpiler import generate_preset_pass_manager
 
 from qiskit.qasm3 import loads
+from qiskit import QuantumCircuit
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 
@@ -139,10 +140,6 @@ class IBMQuantumSiteRun(SiteRun):
         """
 
         try:
-            if not _getAuthDriver(self.getSiteName()).login():
-                logger.error("Unable to login to IBM cloud")
-                return None
-
             # a "backend" is a quantum computer or simulator - we have no default
             if computeType is None:
                 logger.error("computeType (backend) is None")
@@ -189,7 +186,8 @@ class IBMQuantumSiteRun(SiteRun):
             #    - we use the runtime job to get the results asynchronously
 
             # get the IBM Quantum backend
-            service: QiskitRuntimeService = _getAuthDriver(self.getSiteName()).  _getIBMService()
+            service: QiskitRuntimeService = \
+                _getAuthDriver(self.getSiteName())._getIBMService()
             backend = service.backend(computeType)
 
             # the circuit may be expressed in a number of formats:
@@ -220,13 +218,14 @@ class IBMQuantumSiteRun(SiteRun):
                 qc = loads(entry_point)
             elif runArgs is not None and runArgs["format"] == "qpy":
                 qc = qpy.load(io.BytesIO(entry_point))
+            elif runArgs is not None and runArgs["format"] == "qiskit":
+                local_vars = {}
+                exec(entry_point, globals(), local_vars)
+                if 'qc' in local_vars:
+                    qc = local_vars['qc']
             else:
                 logger.error("unable to process entry point: " + entry_point)
                 return None
-
-            if parentContext is None:
-                # assert readiness
-                lwfManager.emitStatus(useContext, self._mapStatus("INITIALIZING"), "INITIALIZING")
 
             # 2. Optimize the circuits and operators.
             pm = generate_preset_pass_manager(backend=backend, optimization_level=1)
@@ -236,9 +235,11 @@ class IBMQuantumSiteRun(SiteRun):
             sampler = Sampler(mode=backend)
             job = sampler.run([isa_circuit], shots=runArgs["shots"])
             logger.info("submitted ibm quantum job id: " + job.job_id())
-            useContext.setNativeId(job.job_id())
 
-            # horse at the gate...
+
+            # there was no sense emitting a status until we knew the native job id,
+            # so now, horse at the gate...
+            useContext.setNativeId(job.job_id())
             lwfManager.emitStatus(useContext, self._mapStatus("QUEUED"), "QUEUED")
 
             # capture current job info & return it
@@ -254,15 +255,14 @@ class IBMQuantumSiteRun(SiteRun):
         Get a job status from the IBM Quantum Cloud.
         """
         try:
-            if not _getAuthDriver(self.getSiteName()).login():
-                logger.error("Unable to login to IBM cloud")
-                return None
+            service: QiskitRuntimeService = \
+                _getAuthDriver(self.getSiteName())._getIBMService()
             status = lwfManager.getStatus(jobId)
             if status is None:
                 return None
             if status.isTerminal():
                 return status
-            job = _getAuthDriver(self.getSiteName())._getIBMService().job(
+            job = service.job(
                 status.getJobContext().getNativeId())
             if job is None:
                 # return the latest status we have
@@ -286,13 +286,12 @@ class IBMQuantumSiteRun(SiteRun):
         Cancel a job in the IBM Quantum Cloud.
         """
         try:
-            if not _getAuthDriver(self.getSiteName()).login():
-                logger.error("Unable to login to IBM cloud")
-                return None
+            service: QiskitRuntimeService = \
+                _getAuthDriver(self.getSiteName())._getIBMService()
             if isinstance(jobContext, str):
                 jobContext = lwfManager.deserialize(jobContext)
             nativeId = jobContext.getNativeId()
-            _getAuthDriver(self.getSiteName())._getIBMService().delete_job(nativeId)
+            service.delete_job(nativeId)
             lwfManager.emitStatus(jobContext, self._mapStatus("CANCELLED"), "CANCELLED")
             return True
         except Exception as e:
@@ -319,7 +318,8 @@ class IBMQuantumSiteSpin(SiteSpin):
         named quantum computers.
         """
         try:
-            service: QiskitRuntimeService = _getAuthDriver(self.getSiteName())._getIBMService()
+            service: QiskitRuntimeService = \
+                _getAuthDriver(self.getSiteName())._getIBMService()
             backends = service.backends()
             backend_names = [backend.name for backend in backends]
             return backend_names
@@ -327,96 +327,4 @@ class IBMQuantumSiteSpin(SiteSpin):
             logger.error("Failed to list compute types: %s", e)
             return []
 
-
-
 #**********************************************************************************
-# Main - testing only
-
-# def get_quantum_circuit() -> QuantumCircuit:
-#     # Create a new circuit with two qubits
-#     qc = QuantumCircuit(2)
-#     # Add a Hadamard gate to qubit 0
-#     qc.h(0)
-#     # Perform a controlled-X gate on qubit 1, controlled by qubit 0
-#     qc.cx(0, 1)
-#     qc.measure_all()
-#     return qc
-
-# def get_observables() -> List[SparsePauliOp]:
-#     # Set up six different observables.
-#     observables_labels = ["IZ", "IX", "ZI", "XI", "ZZ", "XX"]
-#     observables = [SparsePauliOp(label) for label in observables_labels]
-#     return observables
-
-
-# def poll_job(jobid : str, siteName: str):
-#     site = lwfManager.getSite(siteName)
-#     site.getAuthDriver().login()
-#     job_status = site.getRunDriver().getStatus(jobid)
-#     print(f"*** lwfm job {job_status.getJobId()} " + \
-#         f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-#         f"status: {job_status.getStatus()}")
-#     if job_status.getStatus() == "COMPLETE":
-#         print(f"native info: {job_status.getNativeInfo()}")
-
-
-# def main(siteName : str):
-#     """
-#     Main function for testing the IBM Quantum site driver
-#     """
-#     site = lwfManager.getSite(siteName)
-#     site.getAuthDriver().login()
-#     print(f"*** Running as site {site.getSiteName()}")
-#     isLoggedIn = site.getAuthDriver().isAuthCurrent()
-#     print("*** Auth current: ", isLoggedIn)
-#     if not isLoggedIn:
-#         print("IBM authentication failed - exiting")
-
-#     computeTypes = site.getSpinDriver().listComputeTypes()
-#     print("*** Compute types: ", computeTypes)
-#     if computeTypes is None:
-#         computeTypes = []
-
-#     if "ibm_brisbane" in computeTypes:
-#         # Get the quantum circuit
-#         circuit = get_quantum_circuit()
-#         print(f"*** Circuit has {circuit.qubits}")
-
-#         # Serialize the circuit to OpenQASM format (could also do QPY)
-#         circuit_str = dumps(circuit)
-
-#         # Create a JobDefn with the serialized circuit
-#         # The JobDefn constructor accepts a string representation of the job definition
-#         job_defn = JobDefn(circuit_str)
-
-#         # Submit the job
-#         print("*** Ready to send circuit to IBM")
-#         job_status = site.getRunDriver().submit(job_defn, None, "ibm_brisbane",
-#             {"shots": 1024, "format": "qasm3"})
-#         print(f"*** lwfm job {job_status.getJobId()} " + \
-#             f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-#             f"initial status: {job_status.getStatus()}")
-
-#         # we don't want to wait synchronously - this IBM Cloud job might sit in queue
-#         # for a while though the runtime is short
-#         # but let's poll for status one time to show we can
-#         job_status = site.getRunDriver().getStatus(job_status.getJobId())
-#         print(f"*** lwfm job {job_status.getJobId()} " + \
-#             f"is IBM job {job_status.getJobContext().getNativeId()} " + \
-#             f"status: {job_status.getStatus()}")
-#     else:
-#         print("*** No ibm_brisbane anymore... RIP... we'll need to pick another one.")
-
-
-# if __name__ == "__main__":
-#     import sys
-
-#     # Check if an argument was provided (job ID)
-#     if len(sys.argv) > 1:
-#         job_id = sys.argv[1]
-#         print(f"Job ID provided: {job_id}")
-#         # Handle job ID here
-#         poll_job(job_id)
-#     else:
-#         # No arguments, run the main function
-#         main()
