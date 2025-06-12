@@ -1,4 +1,5 @@
 #pylint: disable=invalid-name, broad-except, missing-function-docstring, protected-access
+#pylint: disable=broad-exception-raised
 """
 lwfm Site driver for IBM Quantum
 
@@ -17,9 +18,8 @@ import urllib3
 from qiskit import qpy
 
 from qiskit.transpiler import generate_preset_pass_manager
-
-from qiskit.qasm3 import loads
 from qiskit import QuantumCircuit
+from qiskit.qasm3 import loads
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 
@@ -27,7 +27,8 @@ from lwfm.base.JobContext import JobContext
 from lwfm.base.JobStatus import JobStatus
 from lwfm.base.JobDefn import JobDefn
 from lwfm.base.Workflow import Workflow
-from lwfm.base.Site import SiteAuth, SiteRun, SiteSpin
+from lwfm.base.Metasheet import Metasheet
+from lwfm.base.Site import SiteAuth, SiteRun, SiteRepo, SiteSpin
 from lwfm.midware.LwfManager import logger, lwfManager
 
 # Suppress InsecureRequestWarning messages
@@ -170,6 +171,13 @@ class IBMQuantumSiteRun(SiteRun):
             useContext.setSiteName(self.getSiteName())
             useContext.setComputeType(computeType)
 
+            if jobDefn.getEntryPointType() == JobDefn.ENTRY_TYPE_SITE:
+                return lwfManager.execSiteEndpoint(jobDefn, useContext, True)
+
+            if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
+                logger.error("IBMQuantumSite.run.submit: unsupported entry point type")
+                return None
+
             entry_point = jobDefn.getEntryPoint()
             if entry_point is None:
                 logger.error("site submit entry point is None")
@@ -300,7 +308,40 @@ class IBMQuantumSiteRun(SiteRun):
 
 
 #**********************************************************************************
-# there is no repo driver for IBM Quantum - using LocalSiteRepo
+# Site Repo driver
+
+class IBMQuantumSiteRepo(SiteRepo):
+    """
+    Repo driver.
+    """
+
+    def put(
+        self,
+        localPath: str,
+        siteObjPath: str,
+        jobContext: Union[JobContext, str] = None,
+        metasheet: Union[Metasheet, str] = None
+    ) -> Metasheet:
+        raise Exception("Unsupported method 'repo.put'")
+
+
+    # ask the site to fetch an object by reference and write it locally to a path,
+    # returning the local path where written
+    def get(
+        self,
+        siteObjPath: str,
+        localPath: str,
+        jobContext: Union[JobContext, str] = None
+    ) -> str:
+        pass
+
+
+    # find metasheets by query
+    def find(self, queryRegExs: Union[dict, str]) -> List[Metasheet]:
+        raise Exception("Unsupported method 'repo.find'")
+
+
+
 
 
 #**********************************************************************************
