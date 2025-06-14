@@ -327,13 +327,20 @@ class IBMQuantumSiteRepo(SiteRepo):
 
     # ask the site to fetch an object by reference and write it locally to a path,
     # returning the local path where written
-    def get(
-        self,
-        siteObjPath: str,
-        localPath: str,
-        jobContext: Union[JobContext, str] = None
-    ) -> str:
-        pass
+    def get(self,
+            siteObjPath: str,
+            localPath: str,
+            jobContext: Union[JobContext, str] = None) -> str:
+        status = lwfManager.getStatus(siteObjPath)
+        if status is None or not status.isTerminal():
+            return None
+        result = status.getNativeInfo()
+        # TODO notate the metadata
+        os.makedirs(os.path.dirname(os.path.abspath(localPath)), exist_ok=True)
+        with open(localPath, 'w', encoding='utf-8') as file:
+            file.write(result)
+        return localPath
+
 
 
     # find metasheets by query
