@@ -2,7 +2,7 @@
 IBM Quantum Site Test Circuit
 """
 
-#pylint: disable=broad-exception-caught
+#pylint: disable=broad-exception-caught, protected-access
 
 import os
 import argparse
@@ -10,6 +10,7 @@ import sys
 
 from qiskit.qasm3 import dumps
 from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
 
 from lwfm.base.JobDefn import JobDefn
 from lwfm.base.JobStatus import JobStatus
@@ -87,9 +88,14 @@ if __name__ == "__main__":
         sys.exit(1)
     logger.info(f"using compute type {computeType}")
 
+
+    observable = lwfManager._serialize(SparsePauliOp.from_list([ ("IX", 1/2), ("ZI", -32) ]))
+
     # some runtime args for this run (shots, other runtime case params)
     runArgs={"shots": 1024,             # number of runs of the circuit
         "computeType": computeType,     # from the list of compute types for the site
+        "estimator": True,              # use the estimator primitive
+        "observable": observable,       # with this observable
         "optimization_level": 3}        # agressive transpiler optimization (values: 0-3)
 
     # define a workflow context and capture some meta info about it up front - we can 

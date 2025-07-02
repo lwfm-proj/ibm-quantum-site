@@ -27,7 +27,9 @@ from qiskit.qasm3 import loads
 from qiskit.transpiler import PassManager, generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
+from qiskit_ibm_runtime import EstimatorV2 as Estimator
 from qiskit_aer import AerSimulator
+
 
 import urllib3
 
@@ -282,12 +284,20 @@ class IBMQuantumSiteRun(SiteRun):
                     qc = transpile(qc, cloud_backend, optimization_level=optLevel)
                     backend = AerSimulator.from_backend(cloud_backend)
 
-                # run the job on the simulator
-                job = backend.run(qc, shots=runArgs.get("shots", 1024))
+                    if runArgs.get("estimator", False):
+                        pm = generate_preset_pass_manager(optimization_level=optLevel,
+                            backend=backend)
+                        isa_observable = lwfManager._deserialize(runArgs.get("observable", None)). \
+                            apply_layout(qc.layout)
+                        job = Estimator(mode=backend).run([(qc, isa_observable,
+                            runArgs.get("param_values", []))])
+
+                if not runArgs.get("estimator", False):
+                    job = backend.run(qc, shots=runArgs.get("shots", 1024))
 
                 # emit a complete job status, including the results
                 lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
-                    lwfManager._serialize(job.result()))
+                    lwfManager._serialize(job.result()))  #pylint: disable=used-before-assignment
 
                 # if the backend is a local simulator, execution will not require a remote
                 # job poller, so find and kill it
