@@ -10,33 +10,44 @@ but a better approach would be to squirrel away the connection somewhere, like
 in a lwfm auth repo.
 """
 
-from typing import List, Union, Optional, cast
 import io
 import os
-from qiskit.primitives.backend_estimator_v2 import PassManagerConfig
-import urllib3
+from typing import List, Optional, Union, cast
 
-from qiskit import qpy
+from lwfm.base.JobContext import JobContext
+from lwfm.base.JobDefn import JobDefn
+from lwfm.base.JobStatus import JobStatus
+from lwfm.base.Metasheet import Metasheet
+from lwfm.base.Site import SiteAuth, SiteRepo, SiteRun, SiteSpin
+from lwfm.base.Workflow import Workflow
+from lwfm.base.WorkflowEvent import WorkflowEvent
+from lwfm.midware.LwfManager import logger, lwfManager
+from qiskit import qpy, transpile
 from qiskit.qasm3 import loads
-
-
 from qiskit.transpiler import PassManager, generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
+from qiskit_aer import AerSimulator
 
-from lwfm.base.JobContext import JobContext
-from lwfm.base.JobStatus import JobStatus
-from lwfm.base.JobDefn import JobDefn
-from lwfm.base.Workflow import Workflow
-from lwfm.base.Metasheet import Metasheet
-from lwfm.base.Site import SiteAuth, SiteRun, SiteRepo, SiteSpin
-from lwfm.midware.LwfManager import logger, lwfManager
+import urllib3
 
 # Suppress InsecureRequestWarning messages
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-_DEFAULT_BACKEND="ibm_brisbane"
+_DEFAULT_BACKEND="automatic"
+
+_AER_SIMULATORS = [ \
+    "automatic_sim_aer",
+    "density_matrix_sim__aer",
+    "statevector_sim_aer",
+    "stabilizer_sim_aer",
+    "extended_stabilizer_sim_aer", 
+    "matrix_product_state_sim_aer",
+    "tensor_network_sim_aer",
+    "unitary_sim_aer",
+    "superop_sim_aer"
+    ]
 
 
 #**********************************************************************************
@@ -142,7 +153,7 @@ class IBMQuantumSiteRun(SiteRun):
         """
 
         try:
-            # a "backend" is a quantum computer or simulator - we have no default
+            # a "backend" is a quantum computer or simulator
             if computeType is None or computeType == "":
                 computeType = _DEFAULT_BACKEND
                 logger.warning("computeType (backend) is None, using default: %s", computeType)
@@ -159,7 +170,6 @@ class IBMQuantumSiteRun(SiteRun):
                 runArgs = lwfManager._deserialize(runArgs)
 
             # supported quantum circuit formats
-            # TODO - why is format in runArgs? what goes into each stash?
             if isinstance(jobDefn, str):
                 jobDefn = lwfManager._deserialize(jobDefn)
 
@@ -202,11 +212,6 @@ class IBMQuantumSiteRun(SiteRun):
             # 4. Analyze the results.
             #    - we use the runtime job to get the results asynchronously
 
-            # get the IBM Quantum backend by logging in and getting a handle to
-            # the named quantum computer
-            service: QiskitRuntimeService = \
-                _getAuthDriver(self.getSiteName())._getIBMService()
-            backend = service.backend(computeType)
 
             # the circuit may be expressed in a number of formats:
             # - file: in a qpy format (Qiskit)
@@ -253,27 +258,75 @@ class IBMQuantumSiteRun(SiteRun):
                 logger.error("unable to process entry point: " + entry_point)
                 return None
 
-            logger.info("IBMQuantumSite.submit: circuit loaded")
+            logger.info(f"IBMQuantumSite.submit: circuit loaded {computeType}")
 
-            # 2. Optimize the circuits and operators.
-            pm: PassManager = generate_preset_pass_manager(backend=backend, optimization_level=1)
-            isa_circuit = pm.run(qc)
+            if computeType.endswith("_aer"):
+                # this is a synchronous local simulator run
+                # TODO make it an async submit on local site?
+                lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
-            logger.info("IBMQuantumSite.submit: circuit transpiled")
+                aer_name = computeType.replace("_aer", "")
 
-            # 3. Execute using a quantum primitive function.
-            sampler: Sampler = Sampler(mode=backend)
-            job = sampler.run([isa_circuit], shots=runArgs["shots"])
-            logger.info("IBMQuantumSite.submit: native id: " + job.job_id())
+                # is this a idealized simulator, or do we want one for a specific real backend?
+                if aer_name.endswith("_sim"):
+                    # its a pure sim
+                    aer_name = aer_name.replace("_sim", "")
+                    backend = AerSimulator(method=aer_name)
+                    qc = transpile(qc, backend)
+                else:
+                    # its a model of a real backend
+                    service: QiskitRuntimeService = \
+                        _getAuthDriver(self.getSiteName())._getIBMService()
+                    cloud_backend = service.backend(aer_name)
+                    optLevel = runArgs.get("optimization_level", 1)
+                    qc = transpile(qc, cloud_backend, optimization_level=optLevel)
+                    backend = AerSimulator.from_backend(cloud_backend)
 
-            # there was no sense emitting a status until we knew the native job id,
-            # so now, horse at the gate...
-            useContext.setNativeId(job.job_id())
-            lwfManager.emitStatus(useContext, self._mapStatus("QUEUED"), "QUEUED")
+                # run the job on the simulator
+                job = backend.run(qc, shots=runArgs.get("shots", 1024))
 
-            logger.info("IBMQuantumSite.submit: returning job status")
+                # emit a complete job status, including the results
+                lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
+                    lwfManager._serialize(job.result()))
+
+                # if the backend is a local simulator, execution will not require a remote
+                # job poller, so find and kill it
+                # TODO optimize this search - mod lwfManager
+                events: List[WorkflowEvent] = lwfManager.getActiveWfEvents()
+                if events is not None and len(events) > 0:
+                    for event in events:
+                        if event.getFireJobId() == useContext.getJobId():
+                            lwfManager.unsetEvent(event)
+                            break
+
+            else:
+                # get the IBM Quantum backend by logging in and getting a handle to
+                # the named quantum computer
+                service: QiskitRuntimeService = \
+                    _getAuthDriver(self.getSiteName())._getIBMService()
+                backend = service.backend(computeType)
+
+                # 2. Optimize the circuits and operators.
+                pm: PassManager = generate_preset_pass_manager(backend=backend,
+                    optimization_level=runArgs.get("optimization_level", 1))
+
+                isa_circuit = pm.run(qc)
+                logger.info("IBMQuantumSite.submit: circuit transpiled")
+
+                # 3. Execute using a quantum primitive function.
+                sampler: Sampler = Sampler(mode=backend)
+                job = sampler.run([isa_circuit], shots=runArgs.get("shots", 1024))
+
+                logger.info("IBMQuantumSite.submit: native id: " + job.job_id())
+
+                # there was no sense emitting a status until we knew the native job id,
+                # so now, horse at the gate... only emit the queued for now as the job
+                # will run async on the remote backend
+                useContext.setNativeId(job.job_id())
+                lwfManager.emitStatus(useContext, self._mapStatus("QUEUED"), "QUEUED")
 
             # capture current job info & return it
+            logger.info("IBMQuantumSite.submit: returning initial job status")
             return self.getStatus(useContext.getJobId())
         except Exception as ex:
             logger.error("IBMQuantumSiteRun.submit error: " + str(ex))
@@ -288,17 +341,19 @@ class IBMQuantumSiteRun(SiteRun):
         try:
             if jobId is None or jobId == "":
                 return None
-            service: QiskitRuntimeService = \
-                _getAuthDriver(self.getSiteName())._getIBMService()
             status = lwfManager.getStatus(jobId)
             if status is None:
                 return None
             if status.isTerminal():
                 return status
+
             # call on the IBM service for status of their native job
+            service: QiskitRuntimeService = \
+                _getAuthDriver(self.getSiteName())._getIBMService()
             job = service.job(status.getJobContext().getNativeId())
             if job is None:
                 # return the latest status we have
+                logger.warning("IBM site: no additional job status - returning latest from lwfm")
                 return status
             # make a new lwfm JobStatus message and emit it, return it
             status = JobStatus(status.getJobContext())
@@ -306,7 +361,7 @@ class IBMQuantumSiteRun(SiteRun):
             status.setStatus(lwfmStatus)
             status.setNativeStatus(job.status())
             if job.status() == "DONE":
-                status.setNativeInfo(str(job.result()[0].data.meas.get_counts()))
+                status.setNativeInfo(lwfManager._serialize(job.result()))
             lwfManager.emitStatus(status.getJobContext(), lwfmStatus,
                                   job.status(), status.getNativeInfo())
             return status
@@ -369,11 +424,14 @@ class IBMQuantumSiteRepo(SiteRepo):
         if status is None or not status.isTerminal():
             return None
         context = jobContext
+        if isinstance(context, str):
+            context = lwfManager._deserialize(context)
         if context is None:
             context = JobContext()
             lwfManager.emitStatus(context, JobStatus.RUNNING)
         else:
             context = cast(JobContext, context)
+
         # results are stored as native info
         try:
             result = status.getNativeInfo()
@@ -383,7 +441,7 @@ class IBMQuantumSiteRepo(SiteRepo):
                 logger.info(f"getting to {localPath}")
                 os.makedirs(os.path.dirname(localPath), exist_ok=True)
                 with open(localPath, 'w', encoding='utf-8') as file:
-                    file.write(result)
+                    file.write(str(cast(dict, lwfManager._deserialize(result))))
                 success = True
         except Exception as e:
             logger.error("Failed to get job results: %s", e)
@@ -406,7 +464,9 @@ class IBMQuantumSiteRepo(SiteRepo):
 
 class IBMQuantumSiteSpin(SiteSpin):
     """
-    A Site driver for managing the spin for an IBM Quantum site
+    A Site driver for managing the spin for an IBM Quantum site.
+    Fetches the set of quantum machines available on the IBM cloud site, and prepends
+    the "aer" simulator to the list.
     """
 
     def listComputeTypes(self) -> List[str]:
@@ -419,6 +479,8 @@ class IBMQuantumSiteSpin(SiteSpin):
                 _getAuthDriver(self.getSiteName())._getIBMService()
             backends = service.backends()
             backend_names = [backend.name for backend in backends]
+            backend_names += [f"{name}_aer" for name in backend_names.copy()]
+            backend_names += _AER_SIMULATORS
             return backend_names
         except Exception as e:
             logger.error("Failed to list compute types: %s", e)

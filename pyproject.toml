@@ -12,7 +12,8 @@ dependencies = [
     "lwfm@git+https://github.com/lwfm-proj/lwfm@develop",
     "qiskit>=2.0",
     "qiskit-ibm-runtime",
-    "qiskit_qasm3_import"
+    "qiskit_qasm3_import",
+    "qiskit_aer"
 ]
 
 [tool.black]
