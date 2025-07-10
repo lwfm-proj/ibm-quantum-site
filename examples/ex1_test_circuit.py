@@ -89,7 +89,7 @@ if __name__ == "__main__":
     logger.info(f"using compute type {computeType}")
 
 
-    observable = lwfManager._serialize(SparsePauliOp.from_list([ ("IX", 1/2), ("ZI", -32) ]))
+    observable = lwfManager.serialize(SparsePauliOp.from_list([ ("IX", 1/2), ("ZI", -32) ]))
 
     # some runtime args for this run (shots, other runtime case params)
     runArgs={"shots": 1024,             # number of runs of the circuit

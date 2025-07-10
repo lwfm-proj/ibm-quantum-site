@@ -1,4 +1,4 @@
-#pylint: disable=invalid-name, broad-except, missing-function-docstring, protected-access
+#pylint: disable=invalid-name, broad-except, missing-function-docstring
 #pylint: disable=broad-exception-raised
 """
 lwfm Site driver for IBM Quantum
@@ -167,13 +167,13 @@ class IBMQuantumSiteRun(SiteRun):
             # TODO the lwfm framework can perhaps provide some utilities to cover the
             # below cookie-cutter code
             if isinstance(parentContext, str):
-                parentContext = lwfManager._deserialize(parentContext)
+                parentContext = lwfManager.deserialize(parentContext)
             if isinstance(runArgs, str):
-                runArgs = lwfManager._deserialize(runArgs)
+                runArgs = lwfManager.deserialize(runArgs)
 
             # supported quantum circuit formats
             if isinstance(jobDefn, str):
-                jobDefn = lwfManager._deserialize(jobDefn)
+                jobDefn = lwfManager.deserialize(jobDefn)
 
             # if we get no parent job context, make our own self one # TODO see above
             useContext: JobContext = JobContext()
@@ -287,7 +287,7 @@ class IBMQuantumSiteRun(SiteRun):
                     if runArgs.get("estimator", False):
                         pm = generate_preset_pass_manager(optimization_level=optLevel,
                             backend=backend)
-                        isa_observable = lwfManager._deserialize(runArgs.get("observable", None)). \
+                        isa_observable = lwfManager.deserialize(runArgs.get("observable", None)). \
                             apply_layout(qc.layout)
                         job = Estimator(mode=backend).run([(qc, isa_observable,
                             runArgs.get("param_values", []))])
@@ -297,7 +297,7 @@ class IBMQuantumSiteRun(SiteRun):
 
                 # emit a complete job status, including the results
                 lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
-                    lwfManager._serialize(job.result()))  #pylint: disable=used-before-assignment
+                    lwfManager.serialize(job.result()))  #pylint: disable=used-before-assignment
 
                 # if the backend is a local simulator, execution will not require a remote
                 # job poller, so find and kill it
@@ -371,7 +371,7 @@ class IBMQuantumSiteRun(SiteRun):
             status.setStatus(lwfmStatus)
             status.setNativeStatus(job.status())
             if job.status() == "DONE":
-                status.setNativeInfo(lwfManager._serialize(job.result()))
+                status.setNativeInfo(lwfManager.serialize(job.result()))
             lwfManager.emitStatus(status.getJobContext(), lwfmStatus,
                                   job.status(), status.getNativeInfo())
             return status
@@ -388,7 +388,7 @@ class IBMQuantumSiteRun(SiteRun):
             service: QiskitRuntimeService = \
                 _getAuthDriver(self.getSiteName())._getIBMService()
             if isinstance(jobContext, str):
-                jobContext = lwfManager._deserialize(jobContext)
+                jobContext = lwfManager.deserialize(jobContext)
             nativeId = jobContext.getNativeId()
             # call on the IBM service to delete/cancel their native job
             service.delete_job(nativeId)
@@ -435,7 +435,7 @@ class IBMQuantumSiteRepo(SiteRepo):
             return None
         context = jobContext
         if isinstance(context, str):
-            context = lwfManager._deserialize(context)
+            context = lwfManager.deserialize(context)
         if context is None:
             context = JobContext()
             lwfManager.emitStatus(context, JobStatus.RUNNING)
@@ -451,7 +451,7 @@ class IBMQuantumSiteRepo(SiteRepo):
                 logger.info(f"getting to {localPath}")
                 os.makedirs(os.path.dirname(localPath), exist_ok=True)
                 with open(localPath, 'w', encoding='utf-8') as file:
-                    file.write(str(cast(dict, lwfManager._deserialize(result))))
+                    file.write(str(cast(dict, lwfManager.deserialize(result))))
                 success = True
         except Exception as e:
             logger.error("Failed to get job results: %s", e)
