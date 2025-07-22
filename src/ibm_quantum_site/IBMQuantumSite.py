@@ -23,7 +23,9 @@ from lwfm.base.Workflow import Workflow
 from lwfm.base.WorkflowEvent import WorkflowEvent
 from lwfm.midware.LwfManager import logger, lwfManager
 from qiskit import qpy, transpile
-from qiskit.qasm3 import loads
+import qiskit.qasm2 as q2
+from qiskit.qasm2 import loads as qasm2_loads
+from qiskit.qasm3 import loads as qasm3_loads
 from qiskit.transpiler import PassManager, generate_preset_pass_manager
 from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
@@ -225,6 +227,7 @@ class IBMQuantumSiteRun(SiteRun):
             qc = None
             # its a qpy file
             if entry_point.endswith(".qpy"):
+                logger.info("IBMQuantumSite.submit: loading qpy circuit from file")
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point)
                     return None
@@ -240,11 +243,26 @@ class IBMQuantumSiteRun(SiteRun):
                 # read the Qiskit circuit as QASM
                 with open(entry_point, "r", encoding="utf-8") as file:
                     qasm_circuit = file.read()
-                qc = loads(qasm_circuit)
+                try:
+                    qc = qasm3_loads(qasm_circuit)
+                except Exception:
+                    qc = qasm2_loads(qasm_circuit,
+                                     custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
             # its a qasm3 string
             elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
                 jobDefn.getJobArgs().get("format") == "qasm3":
-                qc = loads(entry_point)
+                try:
+                    qc = qasm3_loads(entry_point)
+                except Exception:
+                    qc = qasm2_loads(entry_point,
+                                     custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
+            elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
+                jobDefn.getJobArgs().get("format") == "qasm":
+                try:
+                    qc = qasm3_loads(entry_point)
+                except Exception:
+                    qc = qasm2_loads(entry_point, 
+                                     custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
             # its a qpy string
             elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
                 jobDefn.getJobArgs().get("format") == "qpy":
