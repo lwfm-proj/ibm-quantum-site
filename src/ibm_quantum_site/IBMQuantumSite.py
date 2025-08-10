@@ -76,7 +76,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         token = self._getToken()
         return QiskitRuntimeService(token=token,
-                                    channel="ibm_cloud",
+                                    channel="ibm_quantum_platform",
                                     verify=False)
                                     # might be needed for corp networks
                                     # verify=False)
