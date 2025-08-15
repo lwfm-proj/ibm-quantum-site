@@ -1,5 +1,5 @@
-#pylint: disable=invalid-name, broad-except, missing-function-docstring
-#pylint: disable=broad-exception-raised
+#pylint: disable=invalid-name, broad-except, missing-function-docstring, exec-used
+#pylint: disable=broad-exception-raised, protected-access, inconsistent-return-statements
 """
 lwfm Site driver for IBM Quantum
 
@@ -12,6 +12,7 @@ in a lwfm auth repo.
 
 import io
 import os
+import base64
 from typing import List, Optional, Union, cast
 
 from lwfm.base.JobContext import JobContext
@@ -22,7 +23,7 @@ from lwfm.base.Site import SiteAuth, SiteRepo, SiteRun, SiteSpin
 from lwfm.base.Workflow import Workflow
 from lwfm.base.WorkflowEvent import WorkflowEvent
 from lwfm.midware.LwfManager import logger, lwfManager
-from qiskit import qpy, transpile
+from qiskit import qpy, transpile, QuantumCircuit
 import qiskit.qasm2 as q2
 from qiskit.qasm2 import loads as qasm2_loads
 from qiskit.qasm3 import loads as qasm3_loads
@@ -66,7 +67,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         """
         Get the token for IBM Cloud which we store in ~/.lwfm/site.toml 
         """
-        return lwfManager.getSiteProperties(self.getSiteName()).get("token")
+        return lwfManager.getSiteProperties(self.getSiteName()).get("token", "")
 
 
     def _getIBMService(self) -> QiskitRuntimeService:
@@ -103,6 +104,7 @@ class IBMQuantumSiteAuth(SiteAuth):
         if not self.login():
             logger.error("Unable to login to IBM cloud")
             return False
+        return True
 
 
 #**********************************************************************************
@@ -112,7 +114,7 @@ class IBMQuantumSiteAuth(SiteAuth):
 def _getAuthDriver(siteName: str) -> IBMQuantumSiteAuth:
     """
     Return the auth driver for IBM Quantum Cloud. 
-    TODO We -could- maybe use the site name to lookup into sites.toml, get the 
+    We -could- maybe use the site name to lookup into sites.toml, get the 
     actual IBM auth class name for this site, but its likely to be this one 
     anyway. Also, we assume the existance of the QiskitRuntimeSerivce, which 
     not be the case in an arbitrary auth driver.
@@ -156,6 +158,9 @@ class IBMQuantumSiteRun(SiteRun):
         Run a quantum circuit on a quantum computer in the IBM cloud. 
         """
 
+        # if we get no parent job context, make our own self one
+        useContext: JobContext = JobContext()
+
         try:
             # a "backend" is a quantum computer or simulator
             if computeType is None or computeType == "":
@@ -166,30 +171,29 @@ class IBMQuantumSiteRun(SiteRun):
             # But the cost is parameters to the site functions come in serialized.
             # If the argument is string, deserialize it, else its an object of the
             # expected kind.
-            # TODO the lwfm framework can perhaps provide some utilities to cover the
-            # below cookie-cutter code
             if isinstance(parentContext, str):
                 parentContext = lwfManager.deserialize(parentContext)
             if isinstance(runArgs, str):
-                runArgs = lwfManager.deserialize(runArgs)
+                my_runArgs: dict = lwfManager.deserialize(runArgs)
+            else:
+                my_runArgs: dict = cast(dict, runArgs)
 
             # supported quantum circuit formats
             if isinstance(jobDefn, str):
                 jobDefn = lwfManager.deserialize(jobDefn)
 
-            # if we get no parent job context, make our own self one # TODO see above
-            useContext: JobContext = JobContext()
             if parentContext is None:
                 pass
             elif isinstance(parentContext, JobContext):
                 useContext = parentContext
             elif isinstance(parentContext, Workflow):
                 useContext.setWorkflowId(parentContext.getWorkflowId())
-                useContext.setName(parentContext.getName())
+                useContext.setName(parentContext.getName() or "")
 
             useContext.setSiteName(self.getSiteName())
             useContext.setComputeType(computeType)
 
+            jobDefn = cast(JobDefn, jobDefn)
             # we've been invoked with a site endpoint - delegate invocation
             if jobDefn.getEntryPointType() == JobDefn.ENTRY_TYPE_SITE:
                 return lwfManager.execSiteEndpoint(jobDefn, useContext, True)
@@ -197,14 +201,14 @@ class IBMQuantumSiteRun(SiteRun):
             # anything other than string type entry point is permitted
             if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
                 logger.error("IBMQuantumSite.run.submit: unsupported entry point type")
-                return None
-            entry_point: str = jobDefn.getEntryPoint()
+                return None # type: ignore
+            entry_point = jobDefn.getEntryPoint()
             if entry_point is None or entry_point == "":
                 logger.error("site submit entry point is None")
-                return None
+                return None # type: ignore
 
-            if runArgs is None:
-                runArgs = {"shots": 1}
+            if my_runArgs is None:
+                my_runArgs = {"shots": 1}
 
             # IBM Quantum Workflow:
             # 1. Map the problem to a quantum-native format.
@@ -225,12 +229,14 @@ class IBMQuantumSiteRun(SiteRun):
             # ultimately we want to convert this format into a Qiskit QuantumCircuit
             # which we can then run through the transpilation pipeline
             qc = None
+            jobArgs = jobDefn.getJobArgs() or {}
+            jobArgs = cast(dict, jobArgs)
             # its a qpy file
             if entry_point.endswith(".qpy"):
                 logger.info("IBMQuantumSite.submit: loading qpy circuit from file")
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point)
-                    return None
+                    return None # type: ignore
                 # read the Qiskit circuit as QPY
                 with open(entry_point, "rb") as file:
                     qpy_circuit = file.read()
@@ -239,7 +245,7 @@ class IBMQuantumSiteRun(SiteRun):
             elif entry_point.endswith(".qasm"):
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point)
-                    return None
+                    return None # type: ignore
                 # read the Qiskit circuit as QASM
                 with open(entry_point, "r", encoding="utf-8") as file:
                     qasm_circuit = file.read()
@@ -249,43 +255,59 @@ class IBMQuantumSiteRun(SiteRun):
                     qc = qasm2_loads(qasm_circuit,
                                      custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
             # its a qasm3 string
-            elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
-                jobDefn.getJobArgs().get("format") == "qasm3":
+            elif jobArgs.get("format") == "qasm3":
                 try:
                     qc = qasm3_loads(entry_point)
                 except Exception:
                     qc = qasm2_loads(entry_point,
                                      custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
-            elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
-                jobDefn.getJobArgs().get("format") == "qasm":
+            elif jobArgs.get("format") == "qasm":
                 try:
                     qc = qasm3_loads(entry_point)
                 except Exception:
-                    qc = qasm2_loads(entry_point, 
+                    qc = qasm2_loads(entry_point,
                                      custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
             # its a qpy string
-            elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
-                jobDefn.getJobArgs().get("format") == "qpy":
-                qc = qpy.load(io.BytesIO(entry_point))
+            elif jobArgs.get("format") == "qpy":
+                # entry_point is a string: try as file path first, else base64-encoded QPY
+                if os.path.exists(entry_point):
+                    with open(entry_point, "rb") as f:
+                        qc = qpy.load(f)
+                else:
+                    try:
+                        data = base64.b64decode(entry_point)
+                        qc = qpy.load(io.BytesIO(data))
+                    except Exception as e:
+                        logger.error("invalid qpy entry_point: not a file path or base64: %s", e)
+                        return None # type: ignore
             # its a qiskit python string
-            elif jobDefn.getJobArgs() and isinstance(jobDefn.getJobArgs(), dict) and \
-                jobDefn.getJobArgs().get("format") == "qiskit":
+            elif jobArgs.get("format") == "qiskit":
                 local_vars = {}
                 exec(entry_point, globals(), local_vars)
                 if 'qc' in local_vars:
                     qc = local_vars['qc']
             else:
                 logger.error("unable to process entry point: " + entry_point)
-                return None
+                return None # type: ignore
 
             logger.info(f"IBMQuantumSite.submit: circuit loaded {computeType}")
 
+            if qc is None:
+                logger.error("IBMQuantumSite.submit: circuit is None")
+                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Circuit loading failed")
+                return None # type: ignore
+            # At this point qc must be a QuantumCircuit; cast for type checkers
+            qc = cast(QuantumCircuit, qc)
+
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
-                # TODO make it an async submit on local site?
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
                 aer_name = computeType.replace("_aer", "")
+
+                # initialize job for all branches in this block
+                job = None
 
                 # is this a idealized simulator, or do we want one for a specific real backend?
                 if aer_name.endswith("_sim"):
@@ -298,29 +320,53 @@ class IBMQuantumSiteRun(SiteRun):
                     service: QiskitRuntimeService = \
                         _getAuthDriver(self.getSiteName())._getIBMService()
                     cloud_backend = service.backend(aer_name)
-                    optLevel = runArgs.get("optimization_level", 1)
+                    optLevel = my_runArgs.get("optimization_level", 1)
                     qc = transpile(qc, cloud_backend, optimization_level=optLevel)
                     backend = AerSimulator.from_backend(cloud_backend)
 
-                    if runArgs.get("estimator", False):
-                        pm = generate_preset_pass_manager(optimization_level=optLevel,
-                            backend=backend)
-                        isa_observable = lwfManager.deserialize(runArgs.get("observable", None)). \
-                            apply_layout(qc.layout)
-                        job = Estimator(mode=backend).run([(qc, isa_observable,
-                            runArgs.get("param_values", []))])
+                    # Optional Estimator path
+                    if my_runArgs.get("estimator", False):
+                        # Prepare observable and align it with the transpiled circuit layout if
+                        #  possible
+                        isa_observable = None
+                        if my_runArgs.get("observable") is not None:
+                            isa_observable = \
+                                lwfManager.deserialize(str(my_runArgs.get("observable"))) or None
+                            # Try applying the circuit layout so qubit indices match the
+                            # transpiled circuit
+                            try:
+                                layout = getattr(qc, "layout", None)
+                                if isa_observable is not None and layout is not None \
+                                    and hasattr(isa_observable, "apply_layout"):
+                                    isa_observable = isa_observable.apply_layout(layout)
+                            except Exception:
+                                # If layout application fails, proceed without it
+                                pass
 
-                if not runArgs.get("estimator", False):
-                    job = backend.run(qc, shots=runArgs.get("shots", 1024))
+                        if isa_observable is not None:
+                            param_vals = my_runArgs.get("param_values")
+                            # EstimatorV2 expects a list of (circuit, observable) or
+                            # (circuit, observable, bindings)
+                            pubs = [(qc, isa_observable)] if param_vals is None \
+                                else [(qc, isa_observable, param_vals)]
+                            job = Estimator(mode=backend).run(pubs)  # type: ignore[arg-type]
 
+                # Run sampler (simulator execute) only if estimator wasn't requested or
+                # failed to produce a job
+                if not my_runArgs.get("estimator", False):
+                    job = backend.run(qc, shots=my_runArgs.get("shots", 1024))
+                if job is None:
+                    logger.error("IBMQuantumSite.submit: job is None")
+                    lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                        "Job submission failed")
+                    return None # type: ignore
                 # emit a complete job status, including the results
                 lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
                     lwfManager.serialize(job.result()))  #pylint: disable=used-before-assignment
 
                 # if the backend is a local simulator, execution will not require a remote
                 # job poller, so find and kill it
-                # TODO optimize this search - mod lwfManager
-                events: List[WorkflowEvent] = lwfManager.getActiveWfEvents()
+                events: List[WorkflowEvent] = lwfManager.getActiveWfEvents() or []
                 if events is not None and len(events) > 0:
                     for event in events:
                         if event.getFireJobId() == useContext.getJobId():
@@ -336,14 +382,19 @@ class IBMQuantumSiteRun(SiteRun):
 
                 # 2. Optimize the circuits and operators.
                 pm: PassManager = generate_preset_pass_manager(backend=backend,
-                    optimization_level=runArgs.get("optimization_level", 1))
+                    optimization_level=my_runArgs.get("optimization_level", 1))
 
                 isa_circuit = pm.run(qc)
+                if isa_circuit is None:
+                    logger.error("IBMQuantumSite.submit: circuit transpilation error")
+                    lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                        "Circuit transpilation failed")
+                    return None # type: ignore
                 logger.info("IBMQuantumSite.submit: circuit transpiled")
 
                 # 3. Execute using a quantum primitive function.
                 sampler: Sampler = Sampler(mode=backend)
-                job = sampler.run([isa_circuit], shots=runArgs.get("shots", 1024))
+                job = sampler.run([isa_circuit], shots=my_runArgs.get("shots", 1024)) # type: ignore
 
                 logger.info("IBMQuantumSite.submit: native id: " + job.job_id())
 
@@ -359,7 +410,7 @@ class IBMQuantumSiteRun(SiteRun):
         except Exception as ex:
             logger.error("IBMQuantumSiteRun.submit error: " + str(ex))
             lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR", str(ex))
-            return None
+            return None # type: ignore
 
 
     def getStatus(self, jobId: str) -> JobStatus:
@@ -368,10 +419,10 @@ class IBMQuantumSiteRun(SiteRun):
         """
         try:
             if jobId is None or jobId == "":
-                return None
+                return None # type: ignore
             status = lwfManager.getStatus(jobId)
             if status is None:
-                return None
+                return None # type: ignore
             if status.isTerminal():
                 return status
 
@@ -385,17 +436,17 @@ class IBMQuantumSiteRun(SiteRun):
                 return status
             # make a new lwfm JobStatus message and emit it, return it
             status = JobStatus(status.getJobContext())
-            lwfmStatus = self._mapStatus(job.status())
+            lwfmStatus = self._mapStatus(str(job.status()))
             status.setStatus(lwfmStatus)
-            status.setNativeStatus(job.status())
+            status.setNativeStatus(str(job.status()))
             if job.status() == "DONE":
                 status.setNativeInfo(lwfManager.serialize(job.result()))
             lwfManager.emitStatus(status.getJobContext(), lwfmStatus,
-                                  job.status(), status.getNativeInfo())
+                                  str(job.status()), status.getNativeInfo())
             return status
         except Exception as e:
             logger.error("Failed to get status: %s", e)
-            return None
+            return None # type: ignore
 
 
     def cancel(self, jobContext: Union[JobContext, str]) -> bool:
@@ -406,11 +457,13 @@ class IBMQuantumSiteRun(SiteRun):
             service: QiskitRuntimeService = \
                 _getAuthDriver(self.getSiteName())._getIBMService()
             if isinstance(jobContext, str):
-                jobContext = lwfManager.deserialize(jobContext)
-            nativeId = jobContext.getNativeId()
+                my_jobContext = lwfManager.deserialize(jobContext)
+            else:
+                my_jobContext = jobContext
+            nativeId = my_jobContext.getNativeId()
             # call on the IBM service to delete/cancel their native job
             service.delete_job(nativeId)
-            lwfManager.emitStatus(jobContext, self._mapStatus("CANCELLED"), "CANCELLED")
+            lwfManager.emitStatus(my_jobContext, self._mapStatus("CANCELLED"), "CANCELLED")
             return True
         except Exception as e:
             logger.error("Failed to cancel job: %s", e)
@@ -444,7 +497,8 @@ class IBMQuantumSiteRepo(SiteRepo):
     def get(self,
             siteObjPath: str,
             localPath: str,
-            jobContext: Optional[Union[JobContext, str]] = None) -> Optional[str]:
+            jobContext: Optional[Union[JobContext, str]] = None,
+            metasheet: Optional[Union[Metasheet, dict, str]] = None) -> Optional[str]:
         """
         In the IBM cloud, a get is equivilent to getting the results for a native job.
         """
@@ -477,7 +531,18 @@ class IBMQuantumSiteRepo(SiteRepo):
         if success:
             if jobContext is None:
                 lwfManager.emitStatus(context, JobStatus.FINISHING)
-            lwfManager._notateGet(self.getSiteName(), localPath, siteObjPath, context)
+            # Coerce metasheet to the expected type (Metasheet | None)
+            ms_meta: Optional[Metasheet] = None
+            if isinstance(metasheet, Metasheet):
+                ms_meta = metasheet
+            elif isinstance(metasheet, str):
+                try:
+                    deser = lwfManager.deserialize(metasheet)
+                    if isinstance(deser, Metasheet):
+                        ms_meta = deser
+                except Exception:
+                    ms_meta = None
+            lwfManager._notateGet(self.getSiteName(), localPath, siteObjPath, context, ms_meta)
             if jobContext is None:
                 lwfManager.emitStatus(context, JobStatus.COMPLETE)
             return localPath

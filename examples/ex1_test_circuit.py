@@ -98,7 +98,7 @@ if __name__ == "__main__":
         "observable": observable,       # with this observable
         "optimization_level": 3}        # agressive transpiler optimization (values: 0-3)
 
-    # define a workflow context and capture some meta info about it up front - we can 
+    # define a workflow context and capture some meta info about it up front - we can
     # append more as the workflow progresses, and individual jobs & data elements will
     # also have their own cross-referenced metadata
     wf = Workflow()
@@ -126,6 +126,9 @@ if __name__ == "__main__":
                  "ibm-quantum-venv", None,    # Use the IBM quantum site
                  statusA.getJobContext())
     )
+    if statusB is None:
+        logger.error("Failed to create job B")
+        sys.exit(1)
 
     if computeType.endswith("_aer"):
         # for the purposes of this example, let's wait synchronously
