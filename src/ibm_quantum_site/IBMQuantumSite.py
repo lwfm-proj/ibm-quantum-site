@@ -568,8 +568,12 @@ class IBMQuantumSiteSpin(SiteSpin):
         named quantum computers.
         """
         try:
-            service: QiskitRuntimeService = \
-                _getAuthDriver(self.getSiteName())._getIBMService()
+            try:
+                service: QiskitRuntimeService = \
+                    _getAuthDriver(self.getSiteName())._getIBMService()
+            except Exception:
+                logger.info("Failed to get IBM service - returning local simulators only")
+                return _AER_SIMULATORS
             backends = service.backends()
             backend_names = [backend.name for backend in backends]
             backend_names += [f"{name}_aer" for name in backend_names.copy()]

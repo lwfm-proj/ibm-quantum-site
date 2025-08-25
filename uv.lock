@@ -274,14 +274,14 @@ wheels = [
 
 [[package]]
 name = "ibm-platform-services"
-version = "0.68.1"
+version = "0.68.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ibm-cloud-sdk-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/7d/3c1240c287c1bed05abed5d0697c659e849d90f87e21d19fb79986f32c8a/ibm_platform_services-0.68.1.tar.gz", hash = "sha256:8b2ff46defdf61c6748f658c37973187b29c79befc0116527724bf47e19cea09", size = 349448, upload-time = "2025-07-21T16:46:53.521Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/49/cdeb7079b75c3b18205113084f0462bb70d85f52854b0273ac4cb4a7f423/ibm_platform_services-0.68.2.tar.gz", hash = "sha256:720bc04b0ad47fdee71795f467f4b6b744ec6629b442ca00f6fc82ae119f9505", size = 349951, upload-time = "2025-08-22T13:20:25.126Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/8d/ea6cf70ac891afda56e9067a83f34eb1266041448eb5998aa7d9a7ab4801/ibm_platform_services-0.68.1-py3-none-any.whl", hash = "sha256:4d7d94c97dc958ed29de9dd622e36059206cba3dbf77955fa20ba255ad74662e", size = 366180, upload-time = "2025-07-21T16:46:52.191Z" },
+    { url = "https://files.pythonhosted.org/packages/93/fa/a2e5461f56659345dac4fb11041b1af949bd42c8e53d9a5adf39950371b3/ibm_platform_services-0.68.2-py3-none-any.whl", hash = "sha256:17a9f6f04e7ed09958b90a67d916ad2a3fd209fa5401a07fdff75d48ea5759f9", size = 366765, upload-time = "2025-08-22T13:20:23.517Z" },
 ]
 
 [[package]]
@@ -338,7 +338,7 @@ wheels = [
 [[package]]
 name = "lwfm"
 version = "0.1.0"
-source = { git = "https://github.com/lwfm-proj/lwfm?rev=develop#1efdf9f431c6da7bf434288ebc0025b539a0c29a" }
+source = { git = "https://github.com/lwfm-proj/lwfm?rev=develop#bb9aff7a7a9b5a0033678c34d783d12084d48c02" }
 dependencies = [
     { name = "dill" },
     { name = "flask" },
