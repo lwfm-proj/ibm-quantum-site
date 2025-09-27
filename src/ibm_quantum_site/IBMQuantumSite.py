@@ -208,7 +208,7 @@ class IBMQuantumSiteRun(SiteRun):
                 return None # type: ignore
 
             if my_runArgs is None:
-                my_runArgs = {"shots": 1}
+                my_runArgs = {"shots": 1, "measure_all": False}
 
             # IBM Quantum Workflow:
             # 1. Map the problem to a quantum-native format.
@@ -240,7 +240,7 @@ class IBMQuantumSiteRun(SiteRun):
                 # read the Qiskit circuit as QPY
                 with open(entry_point, "rb") as file:
                     qpy_circuit = file.read()
-                qc = qpy.load(io.BytesIO(qpy_circuit))
+                qc = qpy.load(io.BytesIO(qpy_circuit))[0]   # TODO what if multiple circuits?
             # its a qasm file
             elif entry_point.endswith(".qasm"):
                 if not os.path.exists(entry_point):
@@ -300,6 +300,9 @@ class IBMQuantumSiteRun(SiteRun):
             # At this point qc must be a QuantumCircuit; cast for type checkers
             qc = cast(QuantumCircuit, qc)
 
+            if my_runArgs.get("measure_all", False):
+                qc.measure_all()
+
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
@@ -323,7 +326,7 @@ class IBMQuantumSiteRun(SiteRun):
                     optLevel = my_runArgs.get("optimization_level", 1)
                     qc = transpile(qc, cloud_backend, optimization_level=optLevel)
                     backend = AerSimulator.from_backend(cloud_backend)
-
+                    
                     # Optional Estimator path
                     if my_runArgs.get("estimator", False):
                         # Prepare observable and align it with the transpiled circuit layout if
@@ -350,6 +353,9 @@ class IBMQuantumSiteRun(SiteRun):
                             pubs = [(qc, isa_observable)] if param_vals is None \
                                 else [(qc, isa_observable, param_vals)]
                             job = Estimator(mode=backend).run(pubs)  # type: ignore[arg-type]
+
+                if my_runArgs.get("save_statevector", False):
+                    qc.save_statevector()
 
                 # Run sampler (simulator execute) only if estimator wasn't requested or
                 # failed to produce a job

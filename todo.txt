@@ -1,0 +1,38 @@
+
+
+        # read the QPY format circuit - we need to add measurements
+        with open(circuit_qpy_path, 'rb') as f:
+            qc = cast(QuantumCircuit, qpy.load(f)[0])  # returns a list, take first circuit
+        qc.measure_all()
+
+        logger.info(f"# gates = {sum(qc.count_ops().values())}")
+        logger.info(f"# depth = {qc.depth()}")
+
+        # Create backend from computeType string
+        if "aer" in computeType.lower():
+            if "statevector" in computeType.lower():
+                backend = AerSimulator(method='statevector')
+            else:
+                backend = AerSimulator()
+        else:
+            # Default to statevector simulator if backend type not recognized
+            backend = AerSimulator(method='statevector')
+
+        logger.info(f"Using backend: {backend.name}")
+        transpiled_qc = transpile(qc, backend=backend)
+
+        logger.info(f"# transpiled gates = {sum(transpiled_qc.count_ops().values())}")
+        logger.info(f"# transpiled depth = {transpiled_qc.depth()}")
+
+        # Add statevector save instruction for statevector backends
+        if "statevector" in computeType.lower():
+            transpiled_qc.save_statevector()
+            logger.info("Added save_statevector() instruction")
+
+        # Serialize the transpiled circuit to file
+        transpiled_circuit_path = circuit_qpy_path.with_suffix('.transpiled.qpy')
+        with open(transpiled_circuit_path, 'wb') as f:
+            qpy.dump(transpiled_qc, f)
+        logger.info(f"Saved transpiled circuit to {transpiled_circuit_path}")
+        lwfManager.notatePut(transpiled_circuit_path.as_posix(),
+            preprocess_status.getJobContext(), {})
