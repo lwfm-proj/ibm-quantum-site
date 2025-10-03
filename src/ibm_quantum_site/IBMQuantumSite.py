@@ -13,7 +13,6 @@ in a lwfm auth repo.
 import io
 import os
 import base64
-from re import A
 from typing import List, Optional, Union, cast
 
 from lwfm.base.JobContext import JobContext
@@ -33,7 +32,6 @@ from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 from qiskit_ibm_runtime import EstimatorV2 as Estimator
 from qiskit_aer import AerSimulator
-from qiskit_aer.noise import NoiseModel, ReadoutError, depolarizing_error
 
 import urllib3
 
@@ -196,6 +194,11 @@ class IBMQuantumSiteRun(SiteRun):
             "optimization_level": 
                 if not None, the optimization level will be used for circuit transpilation
                 (default=0)
+            "noise_model": 
+                in dict form, the noise model will be used for the simulation (default is none);
+                the noise model will be ignored if the computeType is a real quantum computer or
+                the simulation of one (e.g. use in conjunction with "density_matrix_sim_aer")
+
 
         """
 
@@ -356,7 +359,8 @@ class IBMQuantumSiteRun(SiteRun):
             # At this point qc must be a QuantumCircuit; cast for type checkers
             qc = cast(QuantumCircuit, qc)
 
-            # based on runArgs, further modify the circuit
+            # based on runArgs, maybe further modify the circuit; transpilation will
+            # follow later
             if my_runArgs.get("save_statevector", False):
                 qc.save_statevector()
             if my_runArgs.get("measure_all", False):
@@ -371,9 +375,6 @@ class IBMQuantumSiteRun(SiteRun):
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
                 aer_name = computeType.replace("_aer", "")
-                # noise_model = None
-                # if my_runArgs.get("noise_model") is not None:
-                #     noise_model = my_runArgs.get("noise_model")
 
                 # initialize job for all branches in this block
                 job = None
@@ -382,28 +383,14 @@ class IBMQuantumSiteRun(SiteRun):
                     # a named simulator
                     aer_name = aer_name.replace("_sim", "")
 
-                    # # Construct a basic noise model for realistic simulation
-                    # noise_model = NoiseModel()
-
-                    # # For Estimator: add tiny gate errors for shot-dependent statistical variation
-                    # # The key is making errors small enough to preserve fidelity but large enough
-                    # # to create statistical noise that improves with shot averaging
-
-                    # # Extremely small gate errors - just enough to create shot-dependent noise
-                    # error_1q = depolarizing_error(0.0000001, 1)  # 0.00001% - minimal but measurable
-                    # noise_model.add_all_qubit_quantum_error(error_1q, [
-                    #     'h', 'x', 'y', 'z', 'rx', 'ry', 'rz'
-                    #     ])
-
-                    # error_2q = depolarizing_error(0.0000005, 2)  # 0.00005% - minimal but measurable
-                    # noise_model.add_all_qubit_quantum_error(error_2q, ['cx', 'cy', 'cz'])
-
-                    # # Keep readout errors for any sampling-based measurements
-                    # readout_error = ReadoutError([[0.995, 0.005], [0.01, 0.99]])
-                    # noise_model.add_all_qubit_readout_error(readout_error)
-
-                    backend = AerSimulator(method=aer_name) # method="density_matrix") #, noise_model=noise_model)
-                    qc = transpile(qc, backend, 
+                    noise_model = None
+                    if my_runArgs.get("noise_model") is not None:
+                        noise_model = lwfManager.deserialize(str(my_runArgs.get("noise_model")))
+                    if noise_model is not None:
+                        backend = AerSimulator(method=aer_name, noise_model=noise_model)
+                    else:
+                        backend = AerSimulator(method=aer_name)
+                    qc = transpile(qc, backend,
                         optimization_level=my_runArgs.get("optimization_level", 0))
 
                 else:
@@ -492,7 +479,7 @@ class IBMQuantumSiteRun(SiteRun):
 
                 # 3. Execute using a quantum primitive function.
                 sampler: Sampler = Sampler(mode=backend)
-                job = sampler.run([isa_circuit], shots=my_runArgs.get("shots", 1024)) # type: ignore
+                job = sampler.run([isa_circuit], shots=my_runArgs.get("shots", 1024))
 
                 logger.info("IBMQuantumSite.submit: native id: " + job.job_id())
 
