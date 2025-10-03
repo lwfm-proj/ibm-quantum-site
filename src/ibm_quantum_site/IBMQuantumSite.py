@@ -13,6 +13,7 @@ in a lwfm auth repo.
 import io
 import os
 import base64
+from re import A
 from typing import List, Optional, Union, cast
 
 from lwfm.base.JobContext import JobContext
@@ -32,7 +33,7 @@ from qiskit_ibm_runtime import QiskitRuntimeService
 from qiskit_ibm_runtime import Sampler
 from qiskit_ibm_runtime import EstimatorV2 as Estimator
 from qiskit_aer import AerSimulator
-
+from qiskit_aer.noise import NoiseModel, ReadoutError, depolarizing_error
 
 import urllib3
 
@@ -40,7 +41,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-_DEFAULT_BACKEND="automatic"
+_DEFAULT_BACKEND="automatic_sim_aer"
 
 _AER_SIMULATORS = [ \
     "automatic_sim_aer",
@@ -155,33 +156,79 @@ class IBMQuantumSiteRun(SiteRun):
         parentContext: Optional[Union[JobContext, Workflow, str]] = None,
         computeType: Optional[str] = None, runArgs: Optional[Union[dict, str]] = None) -> JobStatus:
         """
-        Run a quantum circuit on a quantum computer in the IBM cloud. 
+        Run a quantum circuit on a simulator or real quantum computer in the IBM cloud. 
+
+        jobDefn: 
+            the job definition, either a JobDefn object or a serialized string of it
+            The job definition must have an entry point of type ENTRY_TYPE_STRING or
+            ENTRY_TYPE_SITE. The latter is a method call on a Site driver and follows that
+            format. The ENTRY_TYPE_STRING is a string representing a circuit in one of several
+            supported formats:
+            - file path: in a qpy format (Qiskit), if the entry point ends in .qpy
+            - file path: in a qasm3 format, if the entry point ends in .qasm - we will
+              try to load it as qasm3 first, else qasm2
+            - string: in a string containing any of the above formats; in this case the
+              jobDefn's jobArgs must contain a "format" key with a value: {"qpy", "qasm3", "qasm",
+              "qiskit"}. The "qiskit" format is a string containing a python expression which will
+              be executed to define a QuantumCircuit object.
+
+        parentContext: 
+            the parent job context, either a JobContext object or a serialized string of it,
+            or a Workflow object or a serialized string of it
+
+        computeType: 
+            _AER_SIMULATORS contains the list of supported AerSimulator names; the actual name xxx
+            should be passed as xxx_sim_aer - this effectively says "use AerSimulator xxx"; this
+            naming schedule allows us to distinguish Aer simulator types from potentially other
+            simulators, and from real quantum computers.
+            default = "automatic_sim_aer" - this will use the AerSimulator that is best for the
+            circuit.
+        
+        runArgs: 
+            "save_statevector": 
+                if True, the statevector of the circuit will be saved (default=False)
+            "measure_all": 
+                if True, all qubits will be measured (default=False)
+            "noise_model": 
+                if not None, the noise model will be used for the simulation (default=None)
+            "shots": 
+                if not None, the number of shots will be used for the simulation (default=1024)
+            "optimization_level": 
+                if not None, the optimization level will be used for circuit transpilation
+                (default=0)
+
         """
 
         # if we get no parent job context, make our own self one
         useContext: JobContext = JobContext()
 
         try:
-            # a "backend" is a quantum computer or simulator
+            # **********************************************************************
+            # what lwfm calls a "computeType" is what IBM calls a "backend" - a quantum
+            # computer or simulator
             if computeType is None or computeType == "":
                 computeType = _DEFAULT_BACKEND
                 logger.warning("computeType (backend) is None, using default: %s", computeType)
 
+            # **********************************************************************
             # In lwfm, we can insulate the Site's dependencies with virtual environments.
             # But the cost is parameters to the site functions come in serialized.
             # If the argument is string, deserialize it, else its an object of the
             # expected kind.
             if isinstance(parentContext, str):
                 parentContext = lwfManager.deserialize(parentContext)
-            if isinstance(runArgs, str):
-                my_runArgs: dict = lwfManager.deserialize(runArgs)
-            else:
-                my_runArgs: dict = cast(dict, runArgs)
+            my_runArgs = {}
+            if runArgs is not None:
+                if isinstance(runArgs, str):
+                    my_runArgs: dict = lwfManager.deserialize(runArgs)
+                else:
+                    my_runArgs: dict = cast(dict, runArgs)
 
-            # supported quantum circuit formats
             if isinstance(jobDefn, str):
                 jobDefn = lwfManager.deserialize(jobDefn)
 
+            # determine the lwfm runtime context. note that IBM jobs will have their own
+            # native job status, which we will translate to canonical lwfm job status.
             if parentContext is None:
                 pass
             elif isinstance(parentContext, JobContext):
@@ -194,7 +241,10 @@ class IBMQuantumSiteRun(SiteRun):
             useContext.setComputeType(computeType)
 
             jobDefn = cast(JobDefn, jobDefn)
-            # we've been invoked with a site endpoint - delegate invocation
+
+            # **********************************************************************
+            # look at the entry point type
+
             if jobDefn.getEntryPointType() == JobDefn.ENTRY_TYPE_SITE:
                 return lwfManager.execSiteEndpoint(jobDefn, useContext, True)
 
@@ -207,9 +257,8 @@ class IBMQuantumSiteRun(SiteRun):
                 logger.error("site submit entry point is None")
                 return None # type: ignore
 
-            if my_runArgs is None:
-                my_runArgs = {"shots": 1, "measure_all": False}
 
+            # **********************************************************************
             # IBM Quantum Workflow:
             # 1. Map the problem to a quantum-native format.
             #    - we assume this was done by the user and we have a Qiskit circuit
@@ -221,18 +270,24 @@ class IBMQuantumSiteRun(SiteRun):
             #    - we use the runtime job to get the results asynchronously
 
 
-            # the circuit may be expressed in a number of formats:
-            # - file: in a qpy format (Qiskit)
-            # - file: in a qasm3 format
+            # the circuit may be expressed in a number of string formats:
+            # - file path: in a qpy format (Qiskit) - if the entry point ends in .qpy
+            # - file path: in a qasm3 format - if the entry point ends in .qasm - we will
+            #   try to load it as qasm3 first, else qasm2
             # - string: in a string containing any of the above formats
 
-            # ultimately we want to convert this format into a Qiskit QuantumCircuit
+            # ultimately we want to convert this format into a Qiskit QuantumCircuit (qc)
             # which we can then run through the transpilation pipeline
             qc = None
             jobArgs = jobDefn.getJobArgs() or {}
             jobArgs = cast(dict, jobArgs)
+
+            if entry_point is None or entry_point == "":
+                logger.error("entry point is None or empty")
+                return None # type: ignore
+
             # its a qpy file
-            if entry_point.endswith(".qpy"):
+            if jobArgs.get("format") == ".qpy":
                 logger.info("IBMQuantumSite.submit: loading qpy circuit from file")
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point)
@@ -242,7 +297,7 @@ class IBMQuantumSiteRun(SiteRun):
                     qpy_circuit = file.read()
                 qc = qpy.load(io.BytesIO(qpy_circuit))[0]   # TODO what if multiple circuits?
             # its a qasm file
-            elif entry_point.endswith(".qasm"):
+            elif jobArgs.get("format") == ".qasm":
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point)
                     return None # type: ignore
@@ -259,8 +314,10 @@ class IBMQuantumSiteRun(SiteRun):
                 try:
                     qc = qasm3_loads(entry_point)
                 except Exception:
+                    logger.warning("failed to load qasm3 circuit, trying qasm2")
                     qc = qasm2_loads(entry_point,
                                      custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
+            # its a qasm3 string
             elif jobArgs.get("format") == "qasm":
                 try:
                     qc = qasm3_loads(entry_point)
@@ -290,43 +347,75 @@ class IBMQuantumSiteRun(SiteRun):
                 logger.error("unable to process entry point: " + entry_point)
                 return None # type: ignore
 
-            logger.info(f"IBMQuantumSite.submit: circuit loaded {computeType}")
-
             if qc is None:
                 logger.error("IBMQuantumSite.submit: circuit is None")
                 lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                     "Circuit loading failed")
                 return None # type: ignore
+
             # At this point qc must be a QuantumCircuit; cast for type checkers
             qc = cast(QuantumCircuit, qc)
 
+            # based on runArgs, further modify the circuit
+            if my_runArgs.get("save_statevector", False):
+                qc.save_statevector()
             if my_runArgs.get("measure_all", False):
                 qc.measure_all()
+
+            # **********************************************************************
+            # we have a circuit - now transpile it and run it on the target backend
+            # which is the "computeType" parameter
 
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
                 aer_name = computeType.replace("_aer", "")
+                # noise_model = None
+                # if my_runArgs.get("noise_model") is not None:
+                #     noise_model = my_runArgs.get("noise_model")
 
                 # initialize job for all branches in this block
                 job = None
 
-                # is this a idealized simulator, or do we want one for a specific real backend?
                 if aer_name.endswith("_sim"):
-                    # its a pure sim
+                    # a named simulator
                     aer_name = aer_name.replace("_sim", "")
-                    backend = AerSimulator(method=aer_name)
-                    qc = transpile(qc, backend)
+
+                    # # Construct a basic noise model for realistic simulation
+                    # noise_model = NoiseModel()
+
+                    # # For Estimator: add tiny gate errors for shot-dependent statistical variation
+                    # # The key is making errors small enough to preserve fidelity but large enough
+                    # # to create statistical noise that improves with shot averaging
+
+                    # # Extremely small gate errors - just enough to create shot-dependent noise
+                    # error_1q = depolarizing_error(0.0000001, 1)  # 0.00001% - minimal but measurable
+                    # noise_model.add_all_qubit_quantum_error(error_1q, [
+                    #     'h', 'x', 'y', 'z', 'rx', 'ry', 'rz'
+                    #     ])
+
+                    # error_2q = depolarizing_error(0.0000005, 2)  # 0.00005% - minimal but measurable
+                    # noise_model.add_all_qubit_quantum_error(error_2q, ['cx', 'cy', 'cz'])
+
+                    # # Keep readout errors for any sampling-based measurements
+                    # readout_error = ReadoutError([[0.995, 0.005], [0.01, 0.99]])
+                    # noise_model.add_all_qubit_readout_error(readout_error)
+
+                    backend = AerSimulator(method=aer_name) # method="density_matrix") #, noise_model=noise_model)
+                    qc = transpile(qc, backend, 
+                        optimization_level=my_runArgs.get("optimization_level", 0))
+
                 else:
                     # its a model of a real backend
                     service: QiskitRuntimeService = \
                         _getAuthDriver(self.getSiteName())._getIBMService()
                     cloud_backend = service.backend(aer_name)
-                    optLevel = my_runArgs.get("optimization_level", 1)
-                    qc = transpile(qc, cloud_backend, optimization_level=optLevel)
                     backend = AerSimulator.from_backend(cloud_backend)
-                    
+                    qc = transpile(qc, backend,
+                        optimization_level=my_runArgs.get("optimization_level", 0))
+
+
                     # Optional Estimator path
                     if my_runArgs.get("estimator", False):
                         # Prepare observable and align it with the transpiled circuit layout if
@@ -354,8 +443,9 @@ class IBMQuantumSiteRun(SiteRun):
                                 else [(qc, isa_observable, param_vals)]
                             job = Estimator(mode=backend).run(pubs)  # type: ignore[arg-type]
 
-                if my_runArgs.get("save_statevector", False):
-                    qc.save_statevector()
+
+                # **************************
+                # at this point we have a circuit transpiled to the target Aer backend
 
                 # Run sampler (simulator execute) only if estimator wasn't requested or
                 # failed to produce a job
@@ -380,6 +470,8 @@ class IBMQuantumSiteRun(SiteRun):
                             break
 
             else:
+                # **************************
+                # this code path is for real quantum computers
                 # get the IBM Quantum backend by logging in and getting a handle to
                 # the named quantum computer
                 service: QiskitRuntimeService = \
@@ -388,7 +480,7 @@ class IBMQuantumSiteRun(SiteRun):
 
                 # 2. Optimize the circuits and operators.
                 pm: PassManager = generate_preset_pass_manager(backend=backend,
-                    optimization_level=my_runArgs.get("optimization_level", 1))
+                    optimization_level=my_runArgs.get("optimization_level", 0))
 
                 isa_circuit = pm.run(qc)
                 if isa_circuit is None:
