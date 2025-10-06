@@ -341,7 +341,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "lwfm", git = "https://github.com/lwfm-proj/lwfm?rev=develop" },
+    { name = "lwfm", git = "https://github.com/lwfm-proj/lwfm" },
     { name = "qiskit", specifier = ">=2.0" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
@@ -381,7 +381,7 @@ wheels = [
 [[package]]
 name = "lwfm"
 version = "0.1.0"
-source = { git = "https://github.com/lwfm-proj/lwfm?rev=develop#dae5e19cfb6a06059fc7ad244844580dec2c86ac" }
+source = { git = "https://github.com/lwfm-proj/lwfm#1f6aacb45a10fed24da98c1927f245fe48a9eef2" }
 dependencies = [
     { name = "dill" },
     { name = "flask" },

@@ -9,7 +9,7 @@ description = "lwfm Site driver for IBM Quantum Cloud"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "lwfm@git+https://github.com/lwfm-proj/lwfm@develop",
+    "lwfm@git+https://github.com/lwfm-proj/lwfm",
     "qiskit>=2.0",
     "qiskit-ibm-runtime",
     "qiskit_qasm3_import",
