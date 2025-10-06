@@ -211,7 +211,7 @@ class IBMQuantumSiteRun(SiteRun):
             # computer or simulator
             if computeType is None or computeType == "":
                 computeType = _DEFAULT_BACKEND
-                logger.warning("computeType (backend) is None, using default: %s", computeType)
+                logger.warning("computeType (backend) is None, using default: %s", computeType, context=useContext)
 
             # **********************************************************************
             # In lwfm, we can insulate the Site's dependencies with virtual environments.
@@ -253,11 +253,11 @@ class IBMQuantumSiteRun(SiteRun):
 
             # anything other than string type entry point is permitted
             if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
-                logger.error("IBMQuantumSite.run.submit: unsupported entry point type")
+                logger.error("IBMQuantumSite.run.submit: unsupported entry point type", context=useContext)
                 return None # type: ignore
             entry_point = jobDefn.getEntryPoint()
             if entry_point is None or entry_point == "":
-                logger.error("site submit entry point is None")
+                logger.error("site submit entry point is None", context=useContext)
                 return None # type: ignore
 
 
@@ -286,14 +286,14 @@ class IBMQuantumSiteRun(SiteRun):
             jobArgs = cast(dict, jobArgs)
 
             if entry_point is None or entry_point == "":
-                logger.error("entry point is None or empty")
+                logger.error("entry point is None or empty", context=useContext)
                 return None # type: ignore
 
             # its a qpy file
             if jobArgs.get("format") == ".qpy":
-                logger.info("IBMQuantumSite.submit: loading qpy circuit from file")
+                logger.info("IBMQuantumSite.submit: loading qpy circuit from file", context=useContext)
                 if not os.path.exists(entry_point):
-                    logger.error("entry point does not exist: " + entry_point)
+                    logger.error("entry point does not exist: " + entry_point, context=useContext)
                     return None # type: ignore
                 # read the Qiskit circuit as QPY
                 with open(entry_point, "rb") as file:
@@ -302,7 +302,7 @@ class IBMQuantumSiteRun(SiteRun):
             # its a qasm file
             elif jobArgs.get("format") == ".qasm":
                 if not os.path.exists(entry_point):
-                    logger.error("entry point does not exist: " + entry_point)
+                    logger.error("entry point does not exist: " + entry_point, context=useContext)
                     return None # type: ignore
                 # read the Qiskit circuit as QASM
                 with open(entry_point, "r", encoding="utf-8") as file:
@@ -317,7 +317,7 @@ class IBMQuantumSiteRun(SiteRun):
                 try:
                     qc = qasm3_loads(entry_point)
                 except Exception:
-                    logger.warning("failed to load qasm3 circuit, trying qasm2")
+                    logger.warning("failed to load qasm3 circuit, trying qasm2", context=useContext)
                     qc = qasm2_loads(entry_point,
                                      custom_instructions=q2.LEGACY_CUSTOM_INSTRUCTIONS)
             # its a qasm3 string
@@ -338,7 +338,7 @@ class IBMQuantumSiteRun(SiteRun):
                         data = base64.b64decode(entry_point)
                         qc = qpy.load(io.BytesIO(data))
                     except Exception as e:
-                        logger.error("invalid qpy entry_point: not a file path or base64: %s", e)
+                        logger.error("invalid qpy entry_point: not a file path or base64: %s", e, context=useContext)
                         return None # type: ignore
             # its a qiskit python string
             elif jobArgs.get("format") == "qiskit":
@@ -347,11 +347,11 @@ class IBMQuantumSiteRun(SiteRun):
                 if 'qc' in local_vars:
                     qc = local_vars['qc']
             else:
-                logger.error("unable to process entry point: " + entry_point)
+                logger.error("unable to process entry point: " + entry_point, context=useContext)
                 return None # type: ignore
 
             if qc is None:
-                logger.error("IBMQuantumSite.submit: circuit is None")
+                logger.error("IBMQuantumSite.submit: circuit is None", context=useContext)
                 lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                     "Circuit loading failed")
                 return None # type: ignore
@@ -439,7 +439,7 @@ class IBMQuantumSiteRun(SiteRun):
                 if not my_runArgs.get("estimator", False):
                     job = backend.run(qc, shots=my_runArgs.get("shots", 1024))
                 if job is None:
-                    logger.error("IBMQuantumSite.submit: job is None")
+                    logger.error("IBMQuantumSite.submit: job is None", context=useContext)
                     lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                         "Job submission failed")
                     return None # type: ignore
@@ -471,17 +471,17 @@ class IBMQuantumSiteRun(SiteRun):
 
                 isa_circuit = pm.run(qc)
                 if isa_circuit is None:
-                    logger.error("IBMQuantumSite.submit: circuit transpilation error")
+                    logger.error("IBMQuantumSite.submit: circuit transpilation error", context=useContext)
                     lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                         "Circuit transpilation failed")
                     return None # type: ignore
-                logger.info("IBMQuantumSite.submit: circuit transpiled")
+                logger.info("IBMQuantumSite.submit: circuit transpiled", context=useContext)
 
                 # 3. Execute using a quantum primitive function.
                 sampler: Sampler = Sampler(mode=backend)
                 job = sampler.run([isa_circuit], shots=my_runArgs.get("shots", 1024))
 
-                logger.info("IBMQuantumSite.submit: native id: " + job.job_id())
+                logger.info("IBMQuantumSite.submit: native id: " + job.job_id(), context=useContext)
 
                 # there was no sense emitting a status until we knew the native job id,
                 # so now, horse at the gate... only emit the queued for now as the job
@@ -490,10 +490,10 @@ class IBMQuantumSiteRun(SiteRun):
                 lwfManager.emitStatus(useContext, self._mapStatus("QUEUED"), "QUEUED")
 
             # capture current job info & return it
-            logger.info("IBMQuantumSite.submit: returning initial job status")
+            logger.info("IBMQuantumSite.submit: returning initial job status", context=useContext)
             return self.getStatus(useContext.getJobId())
         except Exception as ex:
-            logger.error("IBMQuantumSiteRun.submit error: " + str(ex))
+            logger.error("IBMQuantumSiteRun.submit error: " + str(ex), context=useContext)
             lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR", str(ex))
             return None # type: ignore
 
