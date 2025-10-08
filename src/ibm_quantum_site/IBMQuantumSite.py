@@ -257,10 +257,14 @@ class IBMQuantumSiteRun(SiteRun):
             if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
                 logger.error("IBMQuantumSite.run.submit: unsupported entry point type",
                     context=useContext)
+                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Unsupported entry point type")
                 return None # type: ignore
             entry_point = jobDefn.getEntryPoint()
             if entry_point is None or entry_point == "":
                 logger.error("site submit entry point is None", context=useContext)
+                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Entry point is None or empty")
                 return None # type: ignore
 
 
@@ -290,6 +294,8 @@ class IBMQuantumSiteRun(SiteRun):
 
             if entry_point is None or entry_point == "":
                 logger.error("entry point is None or empty", context=useContext)
+                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Entry point is None or empty")
                 return None # type: ignore
 
             # its a qpy file
@@ -298,6 +304,8 @@ class IBMQuantumSiteRun(SiteRun):
                     context=useContext)
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point, context=useContext)
+                    lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                        f"Entry point file does not exist: {entry_point}")
                     return None # type: ignore
                 # read the Qiskit circuit as QPY
                 with open(entry_point, "rb") as file:
@@ -307,6 +315,8 @@ class IBMQuantumSiteRun(SiteRun):
             elif jobArgs.get("format") == ".qasm":
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point, context=useContext)
+                    lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                        f"Entry point file does not exist: {entry_point}")
                     return None # type: ignore
                 # read the Qiskit circuit as QASM
                 with open(entry_point, "r", encoding="utf-8") as file:
@@ -344,6 +354,8 @@ class IBMQuantumSiteRun(SiteRun):
                     except Exception as e:
                         logger.error("invalid qpy entry_point: not a file path or base64: %s",
                             e, context=useContext)
+                        lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                            f"Invalid QPY entry point: {str(e)}")
                         return None # type: ignore
             # its a qiskit python string
             elif jobArgs.get("format") == "qiskit":
@@ -353,6 +365,8 @@ class IBMQuantumSiteRun(SiteRun):
                     qc = local_vars['qc']
             else:
                 logger.error("unable to process entry point: " + entry_point, context=useContext)
+                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Unable to process entry point: unsupported format")
                 return None # type: ignore
 
             if qc is None:
