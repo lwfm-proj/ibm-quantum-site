@@ -22,6 +22,7 @@ from lwfm.base.Metasheet import Metasheet
 from lwfm.base.Site import SiteAuth, SiteRepo, SiteRun, SiteSpin
 from lwfm.base.Workflow import Workflow
 from lwfm.base.WorkflowEvent import WorkflowEvent
+from lwfm.base.Exceptions import JobNotFoundException
 from lwfm.midware.LwfManager import logger, lwfManager
 from qiskit import qpy, transpile, QuantumCircuit
 import qiskit.qasm2 as q2
@@ -211,7 +212,8 @@ class IBMQuantumSiteRun(SiteRun):
             # computer or simulator
             if computeType is None or computeType == "":
                 computeType = _DEFAULT_BACKEND
-                logger.warning("computeType (backend) is None, using default: %s", computeType, context=useContext)
+                logger.warning("computeType (backend) is None, using default: %s",
+                    computeType, context=useContext)
 
             # **********************************************************************
             # In lwfm, we can insulate the Site's dependencies with virtual environments.
@@ -253,7 +255,8 @@ class IBMQuantumSiteRun(SiteRun):
 
             # anything other than string type entry point is permitted
             if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
-                logger.error("IBMQuantumSite.run.submit: unsupported entry point type", context=useContext)
+                logger.error("IBMQuantumSite.run.submit: unsupported entry point type",
+                    context=useContext)
                 return None # type: ignore
             entry_point = jobDefn.getEntryPoint()
             if entry_point is None or entry_point == "":
@@ -291,7 +294,8 @@ class IBMQuantumSiteRun(SiteRun):
 
             # its a qpy file
             if jobArgs.get("format") == ".qpy":
-                logger.info("IBMQuantumSite.submit: loading qpy circuit from file", context=useContext)
+                logger.info("IBMQuantumSite.submit: loading qpy circuit from file",
+                    context=useContext)
                 if not os.path.exists(entry_point):
                     logger.error("entry point does not exist: " + entry_point, context=useContext)
                     return None # type: ignore
@@ -338,7 +342,8 @@ class IBMQuantumSiteRun(SiteRun):
                         data = base64.b64decode(entry_point)
                         qc = qpy.load(io.BytesIO(data))
                     except Exception as e:
-                        logger.error("invalid qpy entry_point: not a file path or base64: %s", e, context=useContext)
+                        logger.error("invalid qpy entry_point: not a file path or base64: %s",
+                            e, context=useContext)
                         return None # type: ignore
             # its a qiskit python string
             elif jobArgs.get("format") == "qiskit":
@@ -372,6 +377,8 @@ class IBMQuantumSiteRun(SiteRun):
 
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
+                # Set a special native ID to indicate this is a local job
+                useContext.setNativeId(f"local_{useContext.getJobId()}")
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
                 aer_name = computeType.replace("_aer", "")
@@ -471,7 +478,8 @@ class IBMQuantumSiteRun(SiteRun):
 
                 isa_circuit = pm.run(qc)
                 if isa_circuit is None:
-                    logger.error("IBMQuantumSite.submit: circuit transpilation error", context=useContext)
+                    logger.error("IBMQuantumSite.submit: circuit transpilation error",
+                        context=useContext)
                     lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                         "Circuit transpilation failed")
                     return None # type: ignore
@@ -511,14 +519,22 @@ class IBMQuantumSiteRun(SiteRun):
             if status.isTerminal():
                 return status
 
+            # Check if this is a cloud job (native ID differs from job ID and not local)
+            native_id = status.getJobContext().getNativeId()
+            if native_id == jobId or (native_id and native_id.startswith("local_")):
+                # Local simulator job
+                return status
+
             # call on the IBM service for status of their native job
             service: QiskitRuntimeService = \
                 _getAuthDriver(self.getSiteName())._getIBMService()
-            job = service.job(status.getJobContext().getNativeId())
+            job = service.job(native_id)
             if job is None:
-                # return the latest status we have
-                logger.warning("IBM site: no additional job status - returning latest from lwfm")
-                return status
+                # Job not found on IBM Quantum - raise exception
+                raise JobNotFoundException(
+                    job_id=jobId,
+                    site_name=self.getSiteName()
+                )
             # make a new lwfm JobStatus message and emit it, return it
             status = JobStatus(status.getJobContext())
             lwfmStatus = self._mapStatus(str(job.status()))
@@ -529,7 +545,17 @@ class IBMQuantumSiteRun(SiteRun):
             lwfManager.emitStatus(status.getJobContext(), lwfmStatus,
                                   str(job.status()), status.getNativeInfo())
             return status
+        except JobNotFoundException:
+            # Re-raise JobNotFoundException so it can be handled by the event processor
+            raise
         except Exception as e:
+            # Check if the exception message indicates job not found
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "does not exist" in error_msg:
+                raise JobNotFoundException(
+                    job_id=jobId,
+                    site_name=self.getSiteName()
+                ) from e
             logger.error("Failed to get status: %s", e)
             return None # type: ignore
 
