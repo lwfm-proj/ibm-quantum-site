@@ -388,6 +388,7 @@ class IBMQuantumSiteRun(SiteRun):
             # **********************************************************************
             # we have a circuit - now transpile it and run it on the target backend
             # which is the "computeType" parameter
+            transpiled_circuit = None  # Track the transpiled circuit for all paths
 
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
@@ -411,8 +412,15 @@ class IBMQuantumSiteRun(SiteRun):
                         backend = AerSimulator(method=aer_name, noise_model=noise_model)
                     else:
                         backend = AerSimulator(method=aer_name)
+
+                    # Re-synthesize circuit to current Qiskit version before transpilation
+                    qc = transpile(qc, basis_gates=['id', 'rz', 'sx', 'x', 'cx'],
+                        optimization_level=0)
+
                     qc = transpile(qc, backend,
                         optimization_level=my_runArgs.get("optimization_level", 0))
+                    transpiled_depth = qc.depth()
+                    transpiled_circuit = qc
 
                 else:
                     # its a model of a real backend
@@ -420,36 +428,42 @@ class IBMQuantumSiteRun(SiteRun):
                         _getAuthDriver(self.getSiteName())._getIBMService()
                     cloud_backend = service.backend(aer_name)
                     backend = AerSimulator.from_backend(cloud_backend)
+
+                    # Re-synthesize circuit to current Qiskit version before transpilation
+                    qc = transpile(qc, basis_gates=['id', 'rz', 'sx', 'x', 'cx'],
+                        optimization_level=0)
+
                     qc = transpile(qc, backend,
                         optimization_level=my_runArgs.get("optimization_level", 0))
+                    transpiled_depth = qc.depth()
+                    transpiled_circuit = qc
 
+                # Optional Estimator path
+                if my_runArgs.get("estimator", False):
+                    # Prepare observable and align it with the transpiled circuit layout if
+                    # possible
+                    isa_observable = None
+                    if my_runArgs.get("observable") is not None:
+                        isa_observable = \
+                            lwfManager.deserialize(str(my_runArgs.get("observable"))) or None
+                        # Try applying the circuit layout so qubit indices match the
+                        # transpiled circuit
+                        try:
+                            layout = getattr(qc, "layout", None)
+                            if isa_observable is not None and layout is not None \
+                                and hasattr(isa_observable, "apply_layout"):
+                                isa_observable = isa_observable.apply_layout(layout)
+                        except Exception:
+                            # If layout application fails, proceed without it
+                            pass
 
-                    # Optional Estimator path
-                    if my_runArgs.get("estimator", False):
-                        # Prepare observable and align it with the transpiled circuit layout if
-                        #  possible
-                        isa_observable = None
-                        if my_runArgs.get("observable") is not None:
-                            isa_observable = \
-                                lwfManager.deserialize(str(my_runArgs.get("observable"))) or None
-                            # Try applying the circuit layout so qubit indices match the
-                            # transpiled circuit
-                            try:
-                                layout = getattr(qc, "layout", None)
-                                if isa_observable is not None and layout is not None \
-                                    and hasattr(isa_observable, "apply_layout"):
-                                    isa_observable = isa_observable.apply_layout(layout)
-                            except Exception:
-                                # If layout application fails, proceed without it
-                                pass
-
-                        if isa_observable is not None:
-                            param_vals = my_runArgs.get("param_values")
-                            # EstimatorV2 expects a list of (circuit, observable) or
-                            # (circuit, observable, bindings)
-                            pubs = [(qc, isa_observable)] if param_vals is None \
-                                else [(qc, isa_observable, param_vals)]
-                            job = Estimator(mode=backend).run(pubs)  # type: ignore[arg-type]
+                    if isa_observable is not None:
+                        param_vals = my_runArgs.get("param_values")
+                        # EstimatorV2 expects a list of (circuit, observable) or
+                        # (circuit, observable, bindings)
+                        pubs = [(qc, isa_observable)] if param_vals is None \
+                            else [(qc, isa_observable, param_vals)]
+                        job = Estimator(mode=backend).run(pubs)  # type: ignore[arg-type]
 
 
                 # **************************
@@ -465,8 +479,9 @@ class IBMQuantumSiteRun(SiteRun):
                         "Job submission failed")
                     return None # type: ignore
                 # emit a complete job status, including the results
+                result = job.result()
                 lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
-                    lwfManager.serialize(job.result()))  #pylint: disable=used-before-assignment
+                    lwfManager.serialize(result))  #pylint: disable=used-before-assignment
 
                 # if the backend is a local simulator, execution will not require a remote
                 # job poller, so find and kill it
@@ -486,7 +501,10 @@ class IBMQuantumSiteRun(SiteRun):
                     _getAuthDriver(self.getSiteName())._getIBMService()
                 backend = service.backend(computeType)
 
-                # 2. Optimize the circuits and operators.
+                # 2. Re-synthesize circuit to current Qiskit version, then optimize
+                # Re-synthesize to normalize gate definitions from older Qiskit version
+                qc = transpile(qc, basis_gates=['id', 'rz', 'sx', 'x', 'cx'], optimization_level=0)
+
                 pm: PassManager = generate_preset_pass_manager(backend=backend,
                     optimization_level=my_runArgs.get("optimization_level", 0))
 
@@ -497,7 +515,8 @@ class IBMQuantumSiteRun(SiteRun):
                     lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
                         "Circuit transpilation failed")
                     return None # type: ignore
-                logger.info("IBMQuantumSite.submit: circuit transpiled", context=useContext)
+                transpiled_depth = isa_circuit.depth()
+                transpiled_circuit = isa_circuit
 
                 # 3. Execute using a quantum primitive function.
                 sampler: Sampler = Sampler(mode=backend)
@@ -513,6 +532,37 @@ class IBMQuantumSiteRun(SiteRun):
 
             # capture current job info & return it
             logger.info("IBMQuantumSite.submit: returning initial job status", context=useContext)
+
+            # Write transpiled circuit to file
+            if transpiled_circuit is not None:
+                try:
+                    # Determine output path based on whether input was a file or string
+                    if os.path.exists(entry_point):
+                        # Input was a file - write to same directory
+                        input_dir = os.path.dirname(entry_point)
+                        input_basename = os.path.basename(entry_point)
+                        input_name, input_ext = os.path.splitext(input_basename)
+                        output_path = os.path.join(input_dir, f"{input_name}_transpiled{input_ext}")
+                    else:
+                        # Input was a string - write to ~/.lwfm/out directory
+                        output_dir = os.path.join(os.path.expanduser("~/.lwfm/out"), "transpiled")
+                        os.makedirs(output_dir, exist_ok=True)
+                        output_path = os.path.join(output_dir,
+                            f"{useContext.getJobId()}_transpiled.qpy")
+
+                    # Write transpiled circuit as QPY
+                    with open(output_path, "wb") as f:
+                        qpy.dump(transpiled_circuit, f)
+                    logger.info(f"Transpiled circuit written to: {output_path}", context=useContext)
+
+                    # Notate the put operation in lwfManager
+                    lwfManager._notatePut(self.getSiteName(), output_path, entry_point,
+                        useContext, None)
+                except Exception as e:
+                    logger.warning(f"Failed to write transpiled circuit: {e}", context=useContext)
+
+            lwfManager.emitStatus(useContext, self._mapStatus("INFO"), "INFO",
+                f"Circuit transpiled (depth={transpiled_depth})")
             return self.getStatus(useContext.getJobId())
         except Exception as ex:
             logger.error("IBMQuantumSiteRun.submit error: " + str(ex), context=useContext)
@@ -555,7 +605,8 @@ class IBMQuantumSiteRun(SiteRun):
             status.setStatus(lwfmStatus)
             status.setNativeStatus(str(job.status()))
             if job.status() == "DONE":
-                status.setNativeInfo(lwfManager.serialize(job.result()))
+                result = job.result()
+                status.setNativeInfo(lwfManager.serialize(result))
             lwfManager.emitStatus(status.getJobContext(), lwfmStatus,
                                   str(job.status()), status.getNativeInfo())
             return status
