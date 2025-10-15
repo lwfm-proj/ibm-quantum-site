@@ -195,6 +195,8 @@ class IBMQuantumSiteRun(SiteRun):
             "optimization_level": 
                 if not None, the optimization level will be used for circuit transpilation
                 (default=0)
+            "transpile_only":
+                if True, only transpile the circuit without executing it (default=False)
             "noise_model": 
                 in dict form, the noise model will be used for the simulation (default is none);
                 the noise model will be ignored if the computeType is a real quantum computer or
@@ -244,6 +246,10 @@ class IBMQuantumSiteRun(SiteRun):
 
             useContext.setSiteName(self.getSiteName())
             useContext.setComputeType(computeType)
+            
+            # Mark Aer simulator jobs as local early to prevent remote polling
+            if computeType and computeType.endswith("_aer"):
+                useContext.setNativeId(f"local_{useContext.getJobId()}")
 
             jobDefn = cast(JobDefn, jobDefn)
 
@@ -392,8 +398,6 @@ class IBMQuantumSiteRun(SiteRun):
 
             if computeType.endswith("_aer"):
                 # this is a synchronous local simulator run
-                # Set a special native ID to indicate this is a local job
-                useContext.setNativeId(f"local_{useContext.getJobId()}")
                 lwfManager.emitStatus(useContext, self._mapStatus("RUNNING"), "RUNNING")
 
                 aer_name = computeType.replace("_aer", "")
@@ -469,28 +473,30 @@ class IBMQuantumSiteRun(SiteRun):
                 # **************************
                 # at this point we have a circuit transpiled to the target Aer backend
 
-                # Run sampler (simulator execute) only if estimator wasn't requested or
-                # failed to produce a job
-                if not my_runArgs.get("estimator", False):
-                    job = backend.run(qc, shots=my_runArgs.get("shots", 1024))
-                if job is None:
-                    logger.error("IBMQuantumSite.submit: job is None", context=useContext)
-                    lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
-                        "Job submission failed")
-                    return None # type: ignore
-                # emit a complete job status, including the results
-                result = job.result()
-                lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
-                    lwfManager.serialize(result))  #pylint: disable=used-before-assignment
+                # Emit transpilation info before terminal status
+                lwfManager.emitStatus(useContext, self._mapStatus("INFO"), "INFO",
+                    f"Circuit transpiled (depth={transpiled_depth})")
 
-                # if the backend is a local simulator, execution will not require a remote
-                # job poller, so find and kill it
-                events: List[WorkflowEvent] = lwfManager.getActiveWfEvents() or []
-                if events is not None and len(events) > 0:
-                    for event in events:
-                        if event.getFireJobId() == useContext.getJobId():
-                            lwfManager.unsetEvent(event)
-                            break
+                # Check if transpile-only mode
+                if my_runArgs.get("transpile_only", False):
+                    logger.info("IBMQuantumSite.submit: transpile-only mode, skipping execution",
+                        context=useContext)
+                    lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
+                        "Transpilation complete (no execution)")
+                else:
+                    # Run sampler (simulator execute) only if estimator wasn't requested or
+                    # failed to produce a job
+                    if not my_runArgs.get("estimator", False):
+                        job = backend.run(qc, shots=my_runArgs.get("shots", 1024))
+                    if job is None:
+                        logger.error("IBMQuantumSite.submit: job is None", context=useContext)
+                        lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
+                            "Job submission failed")
+                        return None # type: ignore
+                    # emit a complete job status, including the results
+                    result = job.result()
+                    lwfManager.emitStatus(useContext, self._mapStatus("DONE"), "DONE",
+                        lwfManager.serialize(result))  #pylint: disable=used-before-assignment
 
             else:
                 # **************************
@@ -561,9 +567,12 @@ class IBMQuantumSiteRun(SiteRun):
                 except Exception as e:
                     logger.warning(f"Failed to write transpiled circuit: {e}", context=useContext)
 
-            lwfManager.emitStatus(useContext, self._mapStatus("INFO"), "INFO",
-                f"Circuit transpiled (depth={transpiled_depth})")
             return self.getStatus(useContext.getJobId())
+        except KeyboardInterrupt:
+            logger.warning("IBMQuantumSiteRun.submit interrupted by user", context=useContext)
+            lwfManager.emitStatus(useContext, self._mapStatus("CANCELLED"), "CANCELLED",
+                "Job cancelled by user (Ctrl-C)")
+            raise  # Re-raise to propagate the interrupt
         except Exception as ex:
             logger.error("IBMQuantumSiteRun.submit error: " + str(ex), context=useContext)
             lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR", str(ex))
