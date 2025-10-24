@@ -259,18 +259,64 @@ class IBMQuantumSiteRun(SiteRun):
             if jobDefn.getEntryPointType() == JobDefn.ENTRY_TYPE_SITE:
                 return lwfManager.execSiteEndpoint(jobDefn, useContext, True)
 
-            # anything other than string type entry point is permitted
+            # support shell commands (shared filesystem with local site)
+            if jobDefn.getEntryPointType() == JobDefn.ENTRY_TYPE_SHELL:
+                import subprocess
+                import shlex
+                entry_point = jobDefn.getEntryPoint()
+                job_args = jobDefn.getJobArgs() or []
+
+                # Build command string with proper argument escaping
+                cmd_parts = [entry_point] + job_args
+                cmd_str = ' '.join(shlex.quote(str(arg)) for arg in cmd_parts)
+
+                logger.info(
+                    f"Executing shell command: {cmd_str}",
+                    context=useContext
+                )
+
+                try:
+                    lwfManager.emitStatus(
+                        useContext, self._mapStatus("RUNNING"), "RUNNING"
+                    )
+                    result = subprocess.run(
+                        cmd_str,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    lwfManager.emitStatus(
+                        useContext, self._mapStatus("DONE"), "DONE", result.stdout
+                    )
+                    return self.getStatus(useContext.getJobId())
+                except subprocess.CalledProcessError as e:
+                    logger.error(
+                        f"Shell command failed: {e.stderr}", context=useContext
+                    )
+                    lwfManager.emitStatus(
+                        useContext, self._mapStatus("ERROR"), "ERROR", e.stderr
+                    )
+                    return None
+
+            # anything other than string/shell type entry point not permitted
             if jobDefn.getEntryPointType() != JobDefn.ENTRY_TYPE_STRING:
-                logger.error("IBMQuantumSite.run.submit: unsupported entry point type",
-                    context=useContext)
-                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
-                    "Unsupported entry point type")
+                logger.error(
+                    "IBMQuantumSite.run.submit: unsupported entry point type",
+                    context=useContext
+                )
+                lwfManager.emitStatus(
+                    useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Unsupported entry point type"
+                )
                 return None # type: ignore
             entry_point = jobDefn.getEntryPoint()
             if entry_point is None or entry_point == "":
                 logger.error("site submit entry point is None", context=useContext)
-                lwfManager.emitStatus(useContext, self._mapStatus("ERROR"), "ERROR",
-                    "Entry point is None or empty")
+                lwfManager.emitStatus(
+                    useContext, self._mapStatus("ERROR"), "ERROR",
+                    "Entry point is None or empty"
+                )
                 return None # type: ignore
 
 
