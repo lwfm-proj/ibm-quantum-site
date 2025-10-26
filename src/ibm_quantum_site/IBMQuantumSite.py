@@ -13,7 +13,34 @@ in a lwfm auth repo.
 import io
 import os
 import base64
+import logging
+import contextlib
 from typing import List, Optional, Union, cast
+
+# Suppress verbose Qiskit logging before any qiskit imports
+os.environ['QISKIT_IN_PARALLEL'] = 'TRUE'
+
+QISKIT_LOGGER_NAMES = [
+    'qiskit',
+    'qiskit.passmanager',
+    'qiskit.compiler',
+    'qiskit.transpiler',
+    'qiskit.transpiler.passes',
+    'qiskit.transpiler.passes.basis',
+    'qiskit.transpiler.passes.basis.basis_translator',
+    'qiskit.passmanager.base_tasks'
+]
+
+
+def configure_qiskit_logging(level: int) -> None:
+    for logger_name in QISKIT_LOGGER_NAMES:
+        qiskit_logger = logging.getLogger(logger_name)
+        qiskit_logger.handlers.clear()
+        qiskit_logger.setLevel(level)
+        qiskit_logger.propagate = False
+
+
+configure_qiskit_logging(logging.ERROR)
 
 from lwfm.base.JobContext import JobContext
 from lwfm.base.JobDefn import JobDefn
